@@ -83,10 +83,19 @@ def create_verification_workflow():
     return workflow.compile()
 
 
-def run_workflow(state: dict) -> dict:
-    """Compile and execute the verification state graph workflow."""
+def run_workflow(*args, **kwargs) -> dict:
+    """
+    Flexible workflow entrypoint supporting both dictionary state 
+    or keyword arguments passed from main_app.py.
+    """
+    if args and isinstance(args[0], dict):
+        state = args[0]
+    else:
+        state = dict(kwargs)
+
     compiled_app = create_verification_workflow()
     return compiled_app.invoke(state)
 
 
 __all__ = ["create_verification_workflow", "run_workflow"]
+
