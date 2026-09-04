@@ -3,7 +3,7 @@ PragyanAI SiliconAI
 ===================
 
 Streamlit application for the Agentic RTL / Verilog Verification Platform.
-Multi-Phase Verification Studio & Comparative Analysis Dashboard.
+Multi-Phase Verification Studio with Granular 11 Sub-Stage Breakdowns.
 """
 
 from __future__ import annotations
@@ -269,9 +269,9 @@ def prepare_run(
 
 
 def execute_multi_phase_workflow(*, verification_run: Any, state: VerificationState) -> dict[str, Any]:
-    """Execute Phase 1 (Original RTL) followed by Phase 2 (RTL Enhancement & Rerun)."""
+    """Execute Phase 1 (Original Baseline Run) followed by Phase 2 (Refinement & Rerun)."""
     
-    # --- PHASE 1: Original Baseline Run ---
+    # --- PHASE 1: Original Baseline Execution (All 11 Agents) ---
     pass_1_state = run_workflow(
         specification=state["specification"],
         rtl_code=state["rtl_code"],
@@ -287,7 +287,7 @@ def execute_multi_phase_workflow(*, verification_run: Any, state: VerificationSt
     )
     pass_1_state = ensure_state_defaults(pass_1_state)
 
-    # --- PHASE 2: Re-run with Enhanced/Repaired RTL ---
+    # --- PHASE 2: Refinement & Rerun (All 11 Agents on Enhanced RTL) ---
     repair_info = pass_1_state.get("repair", {})
     enhanced_rtl = repair_info.get("repaired_rtl") or pass_1_state.get("rtl_code")
     
@@ -400,8 +400,8 @@ if run_button:
                 run_formal=enable_formal_ui,
                 run_red_team=enable_red_team_ui,
             )
-            st.write("Phase 1: Running agents on Original RTL...")
-            st.write("Phase 2: Analyzing logs, repairing RTL, and re-running pipeline...")
+            st.write("Phase 1: Running all 11 sub-stages on Original RTL...")
+            st.write("Phase 2: Parsing logs, repairing RTL, and re-running all 11 sub-stages...")
             
             combined_state = execute_multi_phase_workflow(verification_run=verification_run, state=state)
             final_state = finalize_run(verification_run, combined_state)
@@ -415,7 +415,7 @@ if run_button:
         st.code(traceback.format_exc())
 
 # ============================================================================
-# Multi-Phase Results & Tab Menu Architecture
+# Multi-Phase Results & 3-Phase Tab Architecture
 # ============================================================================
 
 current_state = st.session_state.get("verification_state")
@@ -424,6 +424,7 @@ if current_state:
 
     st.header("4️⃣ Verification Studio & Comparative Analysis")
 
+    # Three explicit tabs matching the requested architecture
     tab_phase1, tab_phase2, tab_phase3 = st.tabs([
         "Phase 1: Original Baseline Execution",
         "Phase 2: Refinement & Rerun",
@@ -433,11 +434,26 @@ if current_state:
     p1_state = current_state.get("phase_1_state", current_state)
     p2_state = current_state.get("phase_2_state", current_state)
 
+    # Granular 11 Sub-Stages Definition
+    sub_stages_def = [
+        ("1. RTL Analysis", "rtl_analysis"),
+        ("2. Planning", "verification_plan"),
+        ("3. Test Generation", "generated_tests"),
+        ("4. Testbench", "generated_testbench"),
+        ("5. Simulation", "simulation"),
+        ("6. Failure Analysis", "failure_analysis"),
+        ("7. Coverage", "coverage"),
+        ("8. Red Team", "red_team"),
+        ("9. Mutation", "mutation"),
+        ("10. Formal", "formal"),
+        ("11. Judge", "verification_judge"),
+    ]
+
     # ------------------------------------------------------------------------
-    # TAB 1: Phase 1 — Original Baseline Execution
+    # TAB 1: Phase 1 (Original Baseline Execution)
     # ------------------------------------------------------------------------
     with tab_phase1:
-        st.subheader("Phase 1: Original Baseline Execution")
+        st.subheader("Phase 1 (Original Baseline Execution)")
         st.markdown("Runs all agents against the initial user-provided RTL and functional specification to establish baseline logs and failure points.")
         
         c1, c2, c3 = st.columns(3)
@@ -445,20 +461,20 @@ if current_state:
         c2.metric("Verification Score", percent_text(p1_state.get("verification_score", 0)))
         c3.metric("Coverage Score", percent_text(p1_state.get("coverage", {}).get("score", 0)))
 
-        with st.expander("View Original RTL Code", expanded=True):
-            st.code(rtl_code, language="verilog")
-
-        with st.expander("Phase 1 Generated Test Vectors & Rationale", expanded=False):
-            for t in p1_state.get("generated_tests", []):
-                st.json(safe_json(t))
-                if t.get("explanation"):
-                    st.info(f"**Rationale:** {t.get('explanation')}")
+        st.markdown("### 📋 Phase 1: Granular 11 Sub-Stages Evaluation")
+        for title, key in sub_stages_def:
+            data = p1_state.get(key)
+            with st.expander(f"Sub-Stage: {title}", expanded=False):
+                if data:
+                    st.json(safe_json(data))
+                else:
+                    st.info(f"No evidence recorded for {title} in Phase 1.")
 
     # ------------------------------------------------------------------------
-    # TAB 2: Phase 2 — Refinement & Rerun
+    # TAB 2: Phase 2 (Refinement & Rerun)
     # ------------------------------------------------------------------------
     with tab_phase2:
-        st.subheader("Phase 2: Refinement & Rerun")
+        st.subheader("Phase 2 (Refinement & Rerun)")
         st.markdown("Parses logs, triggers the RTL Repair / Enhancement Agent to patch timing or reset edge mismatches, and re-runs all agents on the enhanced RTL.")
 
         d1, d2, d3 = st.columns(3)
@@ -471,14 +487,20 @@ if current_state:
         repair_info = p1_state.get("repair", {})
         st.json(safe_json(repair_info))
 
-        st.markdown("### 🔄 Enhanced RTL Code Output (Re-run Target)")
-        st.code(repair_info.get("repaired_rtl") or rtl_code, language="verilog")
+        st.markdown("### 📋 Phase 2: Granular 11 Sub-Stages Re-run Evaluation")
+        for title, key in sub_stages_def:
+            data = p2_state.get(key)
+            with st.expander(f"Sub-Stage (Re-run): {title}", expanded=False):
+                if data:
+                    st.json(safe_json(data))
+                else:
+                    st.info(f"No evidence recorded for {title} in Phase 2.")
 
     # ------------------------------------------------------------------------
-    # TAB 3: Phase 3 — Comparative Analysis & Deep Insights
+    # TAB 3: Phase 3 (Comparative Analysis & Deep Insights)
     # ------------------------------------------------------------------------
     with tab_phase3:
-        st.subheader("Phase 3: Comparative Analysis & Deep Insights")
+        st.subheader("Phase 3 (Comparative Analysis & Deep Insights)")
         st.markdown("Provides an engineering breakdown comparing Original vs. Enhanced RTL, specification requirements, testbench stimuli, log performance, and an explicit breakdown of what worked versus what didn't work.")
 
         orig = rtl_code
