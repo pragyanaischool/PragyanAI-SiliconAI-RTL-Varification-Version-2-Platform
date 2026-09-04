@@ -1,4 +1,4 @@
-"""Test Generator Agent for Structured Stimulus Generation."""
+"""Test Vector Generator Agent with multi-key UI aliasing."""
 
 from __future__ import annotations
 
@@ -16,15 +16,18 @@ class TestGeneratorAgent(BaseAgent):
         vectors = {
             "status": "SUCCESS",
             "test_vectors": [
-                {"input": "0x00", "expected": "0x01", "description": "Baseline increment"},
-                {"input": "0xFF", "expected": "0x00", "description": "Rollover case"}
+                {"input": "4'b0000", "expected": "4'b0001", "description": "Reset state increment"},
+                {"input": "4'b1111", "expected": "4'b0000", "description": "Overflow rollover test"}
             ],
-            "source": "test_generator"
+            "source": "test_generator_agent"
         }
 
+        # Set multi-key aliases for maximum UI compatibility
         state["test_vectors"] = vectors
+        state["generated_tests"] = vectors
+        state["tests"] = vectors
+
         if run_logger:
             run_logger.write_json(self.name, "test_vectors.json", vectors, self.step_index)
 
         return state
-        
