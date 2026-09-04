@@ -337,11 +337,12 @@ def finalize_run(verification_run: Any, state: VerificationState) -> Verificatio
 # UI Header & Sidebar
 # ============================================================================
 
-st.title(f"🧪 {APP_NAME}")
+st.image("PragyanAI_Transperent.png")
+st.title(f"{APP_NAME}")
 st.caption(f"{APP_DESCRIPTION} • Multi-Phase Verification Studio with RAG & Analytics")
 
 with st.sidebar:
-    st.header("⚙️ Configuration")
+    st.header(" Configuration")
     st.write("Icarus Verilog:", "✅ Available" if iverilog_available() else "❌ Not available")
     st.write("VVP:", "✅ Available" if vvp_available() else "❌ Not available")
     st.write("Groq LLM:", "✅ Configured" if os.getenv("GROQ_API_KEY", "") else "⚠️ Check Secrets")
@@ -383,7 +384,7 @@ project_name = st.text_input("Project Name", value=sample_data.get("project_name
 specification = st.text_area("Functional Specification", value=sample_data.get("specification") or DEFAULT_SPECIFICATION, height=220)
 rtl_code = st.text_area("Original RTL / Verilog Code", value=sample_data.get("rtl_code") or DEFAULT_RTL, height=350)
 
-run_button = st.button("🚀 Run Multi-Phase Autonomous Verification", type="primary", use_container_width=True)
+run_button = st.button(" Run Multi-Phase Autonomous Verification", type="primary", use_container_width=True)
 
 if run_button:
     verification_run, state = None, None
@@ -430,7 +431,7 @@ if current_state:
         "Phase 1: Original Baseline",
         "Phase 2: Refinement & Rerun",
         "Phase 3: Comparative Analysis & Analytics",
-        "💬 RAG & LLM Bot Assistant"
+        " RAG & LLM Bot Assistant"
     ])
 
     p1_state = current_state.get("phase_1_state", current_state)
@@ -462,7 +463,7 @@ if current_state:
         c2.metric("Verification Score", percent_text(p1_state.get("verification_score", 0)))
         c3.metric("Coverage Score", percent_text(p1_state.get("coverage", {}).get("score", 0)))
 
-        st.markdown("### 📋 Phase 1: Granular 11 Sub-Stages Evaluation & Final Summaries")
+        st.markdown("###  Phase 1: Granular 11 Sub-Stages Evaluation & Final Summaries")
         for title, key in sub_stages_def:
             data = p1_state.get(key)
             with st.expander(f"Sub-Stage: {title}", expanded=False):
@@ -493,11 +494,11 @@ if current_state:
         d2.metric("Verification Score", percent_text(p2_state.get("verification_score", 0)))
         d3.metric("Coverage Score", percent_text(p2_state.get("coverage", {}).get("score", 0)))
 
-        st.markdown("### 🔧 RTL Repair & Enhancement Agent Report")
+        st.markdown("###  RTL Repair & Enhancement Agent Report")
         repair_info = p1_state.get("repair", {})
         st.json(safe_json(repair_info))
 
-        st.markdown("### 📋 Phase 2: Granular 11 Sub-Stages Re-run Evaluation & Summaries")
+        st.markdown("###  Phase 2: Granular 11 Sub-Stages Re-run Evaluation & Summaries")
         for title, key in sub_stages_def:
             data = p2_state.get(key)
             with st.expander(f"Sub-Stage (Re-run): {title}", expanded=False):
@@ -523,7 +524,7 @@ if current_state:
         st.markdown("Engineering breakdown comparing Original vs. Enhanced RTL, specification requirements, testbench stimuli, log performance, and analytics charts.")
 
         # Analytics Charts Section
-        st.markdown("### 📊 Verification Performance & Score Analytics")
+        st.markdown("###  Verification Performance & Score Analytics")
         score_p1 = score_value(p1_state.get("verification_score", 50))
         score_p2 = score_value(p2_state.get("verification_score", 95))
         cov_p1 = score_value(p1_state.get("coverage", {}).get("score", 40))
@@ -539,7 +540,7 @@ if current_state:
         repair_info = p1_state.get("repair", {})
         enhanced = repair_info.get("repaired_rtl") or rtl_code
 
-        st.markdown("### ⚖️ Side-by-Side RTL Code Comparison (Original vs. Enhanced)")
+        st.markdown("###  Side-by-Side RTL Code Comparison (Original vs. Enhanced)")
         if orig != enhanced:
             diff = list(
                 difflib.unified_diff(
@@ -569,7 +570,7 @@ if current_state:
                 "- **Initial Coverage Limits:** Unpatched code exhibited lower mutation resilience prior to explicit repair injection."
             )
 
-        st.markdown("### 📋 Exhaustive Engineering Comparison Matrix")
+        st.markdown("###  Exhaustive Engineering Comparison Matrix")
         st.markdown("""
 | Evaluation Parameter | Phase 1 (Original Baseline) | Phase 2 (Enhanced Rerun) |
 | :--- | :--- | :--- |
@@ -583,7 +584,7 @@ if current_state:
     # TAB 4: RAG & LLM Bot Assistant
     # ------------------------------------------------------------------------
     with tab_rag_bot:
-        st.subheader("💬 RAG & LLM Bot: Query Verification State & Logs")
+        st.subheader(" RAG & LLM Bot: Query Verification State & Logs")
         st.markdown("Ask natural language questions about your RTL code, execution logs, test cases, or failure diagnostics. The bot retrieves context directly from the run state.")
 
         user_query = st.text_input("Ask a question about this verification run:", placeholder="e.g., Why did Phase 1 fail or what reset issues were found?")
