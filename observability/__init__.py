@@ -1,4 +1,3 @@
-
 """
 PragyanAI SiliconAI
 ===================
@@ -41,6 +40,9 @@ Utility functions
 
     safe_json_value()
         Convert Python values into JSON-compatible values.
+
+    sha256_file()
+        Compute the SHA256 hash of a file safely.
 """
 
 from __future__ import annotations
@@ -93,5 +95,4 @@ __all__ = [
     "safe_json_value",
     "sha256_file",
 ]
-
 
