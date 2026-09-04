@@ -1,4 +1,4 @@
-"""Complete Linear LangGraph Workflow Orchestration for All 12 Verification Agents."""
+"""Complete Linear LangGraph Workflow Orchestration with Formal SVA Assertion Generation."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from agents.rtl_repair_agent import RTLRepairAgent
 from agents.coverage_agent import CoverageAgent
 from agents.red_team_agent import RedTeamAgent
 from agents.mutation_agent import MutationAgent
-from agents.formal_agent import FormalAgent
+from agents.assertion_agent import AssertionAgent
 from agents.verification_judge import VerificationJudgeAgent
 
 
@@ -26,7 +26,7 @@ def run_node(agent_instance):
 
 
 def create_verification_workflow():
-    """Constructs the full 12-stage sequential agentic verification pipeline."""
+    """Constructs the full 12-stage sequential agentic verification pipeline including formal SVA."""
     workflow = StateGraph(dict)
 
     # 1. Instantiate All Agents
@@ -40,7 +40,7 @@ def create_verification_workflow():
     coverage = CoverageAgent()
     red_team = RedTeamAgent()
     mutation = MutationAgent()
-    formal = FormalAgent()
+    assertion_agent = AssertionAgent()
     judge = VerificationJudgeAgent()
 
     # 2. Register Nodes in the Graph
@@ -54,7 +54,7 @@ def create_verification_workflow():
     workflow.add_node("coverage_agent", run_node(coverage))
     workflow.add_node("red_team_agent", run_node(red_team))
     workflow.add_node("mutation_agent", run_node(mutation))
-    workflow.add_node("formal_agent", run_node(formal))
+    workflow.add_node("assertion_agent", run_node(assertion_agent))
     workflow.add_node("verification_judge", run_node(judge))
 
     # 3. Define Guaranteed Linear Execution Flow (Zero Skipped Nodes)
@@ -68,8 +68,8 @@ def create_verification_workflow():
     workflow.add_edge("rtl_repair", "coverage_agent")
     workflow.add_edge("coverage_agent", "red_team_agent")
     workflow.add_edge("red_team_agent", "mutation_agent")
-    workflow.add_edge("mutation_agent", "formal_agent")
-    workflow.add_edge("formal_agent", "verification_judge")
+    workflow.add_edge("mutation_agent", "assertion_agent")
+    workflow.add_edge("assertion_agent", "verification_judge")
     workflow.add_edge("verification_judge", END)
 
     return workflow.compile()
