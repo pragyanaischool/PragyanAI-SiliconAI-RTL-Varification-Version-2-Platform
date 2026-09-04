@@ -1,7 +1,79 @@
-streamlit>=1.39,<2
-langgraph>=0.2,<1
-langchain-core>=0.3,<1
-langchain-groq>=0.2,<1
-pydantic>=2,<3
-python-dotenv>=1,<2
-pytest>=8,<9
+# ==============================================================================
+# PragyanAI College Intelligence Hub - Dependency Manifest
+# ==============================================================================
+
+# --- Frontend & UI Components ---
+streamlit
+audio-recorder-streamlit
+
+# --- Core LangChain Ecosystem ---
+langchain
+langchain-core
+langchain-community
+langchain-groq
+langchain-text-splitters
+langchain-huggingface
+langgraph
+langchain_chroma
+# --- LLM Providers & Inference Engines ---
+groq
+cocotb
+cocotb-tools
+# --- Vector Databases & Embeddings ---
+faiss-cpu
+chromadb
+sentence-transformers
+
+# --- Machine Learning Frameworks (Pinned for Stability) ---
+torch
+torchvision
+
+# --- Document Parsers & File Extractors ---
+SQLAlchemy
+pypdf
+python-docx
+python-pptx
+fpdf2
+lxml
+beautifulsoup4
+trafilatura
+PyMuPDF
+
+# --- YouTube Ingestion & Media Processing ---
+youtube-transcript-api
+yt-dlp
+pytube
+youtube-search-python
+youtube-search
+
+# --- Search, Knowledge & API Tools ---
+ddgs
+google-search-results
+arxiv
+wikipedia
+
+# --- Audio & Speech Synthesis ---
+gTTS
+
+
+# --- Localization & Translation ---
+deep-translator
+
+# --- Core Utilities & Environment Config ---
+python-dotenv
+pandas
+plotly
+requests
+pydantic
+pydantic-settings
+reportlab
+Pillow
+openpyxl
+tabulate
+bcrypt
+pytest
+pytest-cov
+pytest-mock
+qrcode[pil]
+cocotb
+cocotb-tools
