@@ -2,480 +2,787 @@
 PragyanAI SiliconAI
 ===================
 
-Shared LangGraph state for Agentic RTL / Verilog Verification.
+Shared verification state.
+
+This module defines the canonical state contract used by every
+agent in the verification workflow.
+
+The primary goal is to prevent the following class of problems:
+
+    {}
+    unknown
+    missing result
+    inconsistent state keys
+    fake PASS / FAIL
+    one agent overwriting another agent's data
+
+Every stage has an explicit result container.
+
+Possible status values
+----------------------
+
+    NOT_STARTED
+    RUNNING
+    PASS
+    FAIL
+    FAILED
+    SKIPPED
+    DEGRADED
+    COMPLETED
+
+Important
+---------
+
+An empty dictionary is NOT considered a successful verification result.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, TypedDict
+from copy import deepcopy
+from datetime import datetime, timezone
+from typing import Any, TypedDict
 
-from observability.run_manager import VerificationRun
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+STATUS_NOT_STARTED = "NOT_STARTED"
+STATUS_RUNNING = "RUNNING"
+STATUS_PASS = "PASS"
+STATUS_FAIL = "FAIL"
+STATUS_FAILED = "FAILED"
+STATUS_SKIPPED = "SKIPPED"
+STATUS_DEGRADED = "DEGRADED"
+STATUS_COMPLETED = "COMPLETED"
+
+
+AGENT_NAMES = [
+    "rtl_analyzer",
+    "verification_planner",
+    "test_generator",
+    "testbench_generator",
+    "simulator",
+    "failure_analyzer",
+    "coverage",
+    "red_team",
+    "mutation",
+    "formal",
+    "verification_judge",
+]
+
+
+# ---------------------------------------------------------------------------
+# TypedDict
+# ---------------------------------------------------------------------------
 
 class VerificationState(TypedDict, total=False):
     """
-    Complete state passed between verification agents.
+    Canonical LangGraph-compatible verification state.
 
-    The most important fields for observability are:
-
-        run_id
-        verification_run
-        logger
-
-    All agents in one verification run must use the same logger.
+    total=False is intentional because LangGraph nodes may progressively
+    populate the state.
     """
 
-    # ========================================================================
-    # Run / observability
-    # ========================================================================
+    # ------------------------------------------------------------------
+    # Run information
+    # ------------------------------------------------------------------
 
     run_id: str
-
-    verification_run: VerificationRun
-
-    logger: Any
-
-    run_metadata: Dict[str, Any]
-
+    run_dir: str
     started_at: str
+    completed_at: str
 
-    current_agent: str
-
-    current_step: str
-
-    agent_status: str
-
-    iteration: int
-
-    max_iterations: int
-
-    # ========================================================================
-    # User input
-    # ========================================================================
+    # ------------------------------------------------------------------
+    # Project information
+    # ------------------------------------------------------------------
 
     project_name: str
-
     specification: str
-
     rtl_code: str
-
     reference_testbench: str
-
     reference_test_vectors: Any
 
-    # ========================================================================
-    # RTL analysis
-    # ========================================================================
+    # ------------------------------------------------------------------
+    # Configuration
+    # ------------------------------------------------------------------
 
-    rtl_analysis: Dict[str, Any]
+    max_iterations: int
+    current_iteration: int
 
-    module_name: str
+    run_mutation: bool
+    run_formal: bool
+    run_red_team: bool
 
-    ports: List[Dict[str, Any]]
+    # ------------------------------------------------------------------
+    # Agent outputs
+    # ------------------------------------------------------------------
 
-    clocks: List[str]
-
-    resets: List[str]
-
-    registers: List[str]
-
-    parameters: List[str]
-
-    inferred_behavior: List[str]
-
-    rtl_risks: List[str]
-
-    # ========================================================================
-    # Verification planning
-    # ========================================================================
-
-    verification_plan: Dict[str, Any]
-
-    scenarios: List[Dict[str, Any]]
-
-    coverage_goals: List[str]
-
-    corner_cases: List[str]
-
-    # ========================================================================
-    # Test generation
-    # ========================================================================
-
-    generated_tests: List[Dict[str, Any]]
-
-    test_cases: List[Dict[str, Any]]
-
-    test_generation_notes: str
-
-    # ========================================================================
-    # Testbench
-    # ========================================================================
-
+    rtl_analysis: dict[str, Any]
+    verification_plan: dict[str, Any]
+    generated_tests: list[dict[str, Any]]
     generated_testbench: str
 
-    testbench_code: str
+    simulation: dict[str, Any]
+    failure_analysis: dict[str, Any]
+    coverage: dict[str, Any]
+    red_team: dict[str, Any]
+    mutation: dict[str, Any]
+    formal: dict[str, Any]
+    verification_judge: dict[str, Any]
+    repair: dict[str, Any]
 
-    testbench_status: str
+    # ------------------------------------------------------------------
+    # Agent execution
+    # ------------------------------------------------------------------
 
-    # ========================================================================
-    # Simulation
-    # ========================================================================
+    current_agent: str
+    current_step: str
+    agent_status: str
 
-    simulation_result: Dict[str, Any]
+    agent_history: list[dict[str, Any]]
 
-    simulation_status: str
-
-    simulation_passed: bool
-
-    simulation_return_code: Optional[int]
-
-    simulation_stdout: str
-
-    simulation_stderr: str
-
-    waveform_file: Optional[str]
-
-    # ========================================================================
-    # Failure analysis
-    # ========================================================================
-
-    failures: List[Dict[str, Any]]
-
-    failure_analysis: Dict[str, Any]
-
-    root_causes: List[str]
-
-    bug_locations: List[Dict[str, Any]]
-
-    # ========================================================================
-    # Coverage
-    # ========================================================================
-
-    coverage: Dict[str, Any]
-
-    coverage_score: float
-
-    coverage_gaps: List[str]
-
-    # ========================================================================
-    # Red team
-    # ========================================================================
-
-    red_team_results: Dict[str, Any]
-
-    adversarial_tests: List[Dict[str, Any]]
-
-    security_risks: List[str]
-
-    # ========================================================================
-    # Mutation
-    # ========================================================================
-
-    mutation_results: Dict[str, Any]
-
-    mutations: List[Dict[str, Any]]
-
-    mutation_score: float
-
-    surviving_mutants: List[Dict[str, Any]]
-
-    # ========================================================================
-    # Formal
-    # ========================================================================
-
-    formal_results: Dict[str, Any]
-
-    formal_status: str
-
-    formal_counterexamples: List[Dict[str, Any]]
-
-    # ========================================================================
-    # Repair
-    # ========================================================================
-
-    repaired_rtl: str
-
-    repair_result: Dict[str, Any]
-
-    repair_applied: bool
-
-    # ========================================================================
-    # Judge
-    # ========================================================================
-
-    judge_result: Dict[str, Any]
-
-    judge_verdict: str
+    # ------------------------------------------------------------------
+    # Final result
+    # ------------------------------------------------------------------
 
     final_verdict: str
-
     verification_score: float
-
     confidence: float
 
-    # ========================================================================
-    # Iterative verification
-    # ========================================================================
+    # ------------------------------------------------------------------
+    # Errors / warnings / messages
+    # ------------------------------------------------------------------
 
-    retry_required: bool
+    errors: list[str]
+    warnings: list[str]
+    messages: list[str]
 
-    next_action: str
+    # ------------------------------------------------------------------
+    # Runtime / logging
+    # ------------------------------------------------------------------
 
-    convergence_status: str
+    logger: Any
+    verification_run: Any
 
-    # ========================================================================
-    # Artifacts / reporting
-    # ========================================================================
+    # ------------------------------------------------------------------
+    # Artifacts
+    # ------------------------------------------------------------------
 
-    artifact_manifest: Dict[str, Any]
+    artifacts: list[dict[str, Any]]
 
-    report: Dict[str, Any]
+    # ------------------------------------------------------------------
+    # Internal metadata
+    # ------------------------------------------------------------------
 
-    report_text: str
-
-    errors: List[str]
-
-    warnings: List[str]
+    metadata: dict[str, Any]
 
 
-def create_initial_state(
-    *,
-    specification: str = "",
-    rtl_code: str = "",
-    project_name: str = "custom_rtl",
-    reference_testbench: str = "",
-    reference_test_vectors: Any = None,
-    max_iterations: Optional[int] = None,
-    verification_run: Optional[VerificationRun] = None,
-) -> VerificationState:
+# ---------------------------------------------------------------------------
+# Time helpers
+# ---------------------------------------------------------------------------
+
+def utc_now() -> str:
     """
-    Create the initial LangGraph state.
-
-    If verification_run is supplied, its logger is automatically placed
-    into the state and reused by every agent.
+    Return a UTC timestamp suitable for JSON serialization.
     """
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
 
-    state: VerificationState = {
-        "run_id": "",
-        "run_metadata": {},
-        "started_at": "",
 
-        "current_agent": "",
-        "current_step": "",
-        "agent_status": "created",
+# ---------------------------------------------------------------------------
+# Empty stage factories
+# ---------------------------------------------------------------------------
 
-        "iteration": 0,
-        "max_iterations": (
-            max_iterations
-            if max_iterations is not None
-            else 3
-        ),
-
-        "project_name": project_name,
-
-        "specification": specification,
-        "rtl_code": rtl_code,
-
-        "reference_testbench": reference_testbench,
-        "reference_test_vectors": reference_test_vectors,
-
-        "rtl_analysis": {},
+def empty_rtl_analysis() -> dict[str, Any]:
+    return {
+        "status": STATUS_NOT_STARTED,
         "module_name": "",
         "ports": [],
+        "parameters": [],
         "clocks": [],
         "resets": [],
         "registers": [],
-        "parameters": [],
-        "inferred_behavior": [],
-        "rtl_risks": [],
+        "wires": [],
+        "always_blocks": [],
+        "assignments": [],
+        "instances": [],
+        "behavioral_summary": "",
+        "risks": [],
+        "confidence": 0.0,
+        "source": "not_run",
+    }
 
-        "verification_plan": {},
+
+def empty_verification_plan() -> dict[str, Any]:
+    return {
+        "status": STATUS_NOT_STARTED,
+        "objective": "",
         "scenarios": [],
-        "coverage_goals": [],
         "corner_cases": [],
+        "assertions": [],
+        "coverage_goals": [],
+        "priority": [],
+        "source": "not_run",
+    }
 
-        "generated_tests": [],
-        "test_cases": [],
-        "test_generation_notes": "",
 
-        "generated_testbench": "",
-        "testbench_code": "",
-        "testbench_status": "not_started",
+def empty_simulation() -> dict[str, Any]:
+    return {
+        "status": STATUS_NOT_STARTED,
+        "compile_status": "NOT_RUN",
+        "simulation_status": "NOT_RUN",
+        "exit_code": None,
+        "passed": False,
+        "tests_total": 0,
+        "tests_passed": 0,
+        "tests_failed": 0,
+        "stdout": "",
+        "stderr": "",
+        "compile_log": "",
+        "simulation_log": "",
+        "duration_seconds": 0.0,
+        "testbench_file": "",
+        "rtl_file": "",
+        "executable_file": "",
+        "error": "",
+        "source": "not_run",
+    }
 
-        "simulation_result": {},
-        "simulation_status": "not_started",
-        "simulation_passed": False,
-        "simulation_return_code": None,
-        "simulation_stdout": "",
-        "simulation_stderr": "",
-        "waveform_file": None,
 
+def empty_failure_analysis() -> dict[str, Any]:
+    return {
+        "status": STATUS_NOT_STARTED,
         "failures": [],
-        "failure_analysis": {},
         "root_causes": [],
-        "bug_locations": [],
+        "suspected_rtl_locations": [],
+        "recommendations": [],
+        "severity": "NONE",
+        "summary": "",
+        "source": "not_run",
+    }
 
-        "coverage": {},
-        "coverage_score": 0.0,
-        "coverage_gaps": [],
 
-        "red_team_results": {},
-        "adversarial_tests": [],
-        "security_risks": [],
+def empty_coverage() -> dict[str, Any]:
+    return {
+        "status": STATUS_NOT_STARTED,
+        "score": 0.0,
+        "target": 90.0,
+        "scenarios_total": 0,
+        "scenarios_covered": 0,
+        "scenarios_missed": [],
+        "covered": [],
+        "uncovered": [],
+        "method": "scenario_proxy",
+        "source": "not_run",
+    }
 
-        "mutation_results": {},
-        "mutations": [],
-        "mutation_score": 0.0,
-        "surviving_mutants": [],
 
-        "formal_results": {},
-        "formal_status": "not_run",
-        "formal_counterexamples": [],
+def empty_red_team() -> dict[str, Any]:
+    return {
+        "status": STATUS_NOT_STARTED,
+        "scenarios": [],
+        "tests_generated": 0,
+        "tests_executed": 0,
+        "failures_found": 0,
+        "issues": [],
+        "score": 0.0,
+        "source": "not_run",
+    }
 
-        "repaired_rtl": "",
-        "repair_result": {},
+
+def empty_mutation() -> dict[str, Any]:
+    return {
+        "status": STATUS_NOT_STARTED,
+        "mutants_total": 0,
+        "mutants_killed": 0,
+        "mutants_survived": 0,
+        "score": None,
+        "target": 80.0,
+        "mutants": [],
+        "source": "not_run",
+    }
+
+
+def empty_formal() -> dict[str, Any]:
+    return {
+        "status": STATUS_NOT_STARTED,
+        "backend": "none",
+        "properties_checked": 0,
+        "properties_proven": 0,
+        "properties_failed": 0,
+        "score": None,
+        "reason": "",
+        "source": "not_run",
+    }
+
+
+def empty_judge() -> dict[str, Any]:
+    return {
+        "status": STATUS_NOT_STARTED,
+        "verification_score": 0.0,
+        "target": 90.0,
+        "verdict": "NEED_MORE",
+        "confidence": 0.0,
+        "evidence": {},
+        "strengths": [],
+        "weaknesses": [],
+        "recommendations": [],
+        "source": "not_run",
+    }
+
+
+def empty_repair() -> dict[str, Any]:
+    return {
+        "status": STATUS_NOT_STARTED,
+        "repair_attempted": False,
         "repair_applied": False,
+        "original_rtl": "",
+        "repaired_rtl": "",
+        "changes": [],
+        "reason": "",
+        "source": "not_run",
+    }
 
-        "judge_result": {},
-        "judge_verdict": "NOT_RUN",
-        "final_verdict": "NOT_RUN",
 
+# ---------------------------------------------------------------------------
+# State factory
+# ---------------------------------------------------------------------------
+
+def create_initial_state(
+    specification: str = "",
+    rtl_code: str = "",
+    project_name: str = "rtl_project",
+    reference_testbench: str = "",
+    reference_test_vectors: Any = None,
+    max_iterations: int = 2,
+    run_mutation: bool = True,
+    run_formal: bool = False,
+    run_red_team: bool = True,
+    run_id: str = "",
+    run_dir: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> VerificationState:
+    """
+    Create a fully initialized verification state.
+
+    Every expected key exists from the beginning. This prevents downstream
+    agents and the Streamlit UI from encountering missing keys.
+    """
+
+    state: VerificationState = {
+        # Run
+        "run_id": run_id or "",
+        "run_dir": run_dir or "",
+        "started_at": utc_now(),
+        "completed_at": "",
+
+        # Project
+        "project_name": project_name or "rtl_project",
+        "specification": specification or "",
+        "rtl_code": rtl_code or "",
+        "reference_testbench": reference_testbench or "",
+        "reference_test_vectors": (
+            reference_test_vectors
+            if reference_test_vectors is not None
+            else []
+        ),
+
+        # Configuration
+        "max_iterations": max(
+            1,
+            int(max_iterations or 1),
+        ),
+        "current_iteration": 1,
+
+        "run_mutation": bool(run_mutation),
+        "run_formal": bool(run_formal),
+        "run_red_team": bool(run_red_team),
+
+        # Agent outputs
+        "rtl_analysis": empty_rtl_analysis(),
+        "verification_plan": empty_verification_plan(),
+        "generated_tests": [],
+        "generated_testbench": "",
+
+        "simulation": empty_simulation(),
+        "failure_analysis": empty_failure_analysis(),
+        "coverage": empty_coverage(),
+        "red_team": empty_red_team(),
+        "mutation": empty_mutation(),
+        "formal": empty_formal(),
+        "verification_judge": empty_judge(),
+        "repair": empty_repair(),
+
+        # Execution
+        "current_agent": "",
+        "current_step": "",
+        "agent_status": STATUS_NOT_STARTED,
+        "agent_history": [],
+
+        # Final
+        "final_verdict": "NEED_MORE",
         "verification_score": 0.0,
         "confidence": 0.0,
 
-        "retry_required": False,
-        "next_action": "",
-        "convergence_status": "not_started",
-
-        "artifact_manifest": {},
-        "report": {},
-        "report_text": "",
-
+        # Diagnostics
         "errors": [],
         "warnings": [],
+        "messages": [],
+
+        # Runtime
+        "logger": None,
+        "verification_run": None,
+
+        # Artifacts
+        "artifacts": [],
+
+        # Metadata
+        "metadata": deepcopy(
+            metadata or {}
+        ),
     }
-
-    if verification_run is not None:
-
-        state["verification_run"] = verification_run
-
-        state["logger"] = verification_run.logger
-
-        state["run_id"] = verification_run.run_id
-
-        state["run_metadata"] = dict(
-            verification_run.metadata
-        )
-
-        state["started_at"] = (
-            verification_run.started_at
-        )
-
-        state["agent_status"] = "running"
 
     return state
 
 
-def get_logger(
-    state: VerificationState,
-) -> Any:
+# ---------------------------------------------------------------------------
+# State normalization
+# ---------------------------------------------------------------------------
+
+def ensure_state_defaults(
+    state: dict[str, Any] | None,
+) -> VerificationState:
     """
-    Return the shared run-level logger.
+    Normalize an existing state.
 
-    This helper prevents agents from accidentally constructing their
-    own logger.
-    """
+    This function is useful when migrating from the older project where
+    some keys may not exist.
 
-    logger = state.get(
-        "logger"
-    )
-
-    if logger is None:
-
-        verification_run = state.get(
-            "verification_run"
-        )
-
-        if verification_run is not None:
-            return verification_run.logger
-
-    return logger
-
-
-def get_verification_run(
-    state: VerificationState,
-) -> Optional[VerificationRun]:
-    """
-    Return the shared VerificationRun object.
+    Existing values are preserved.
+    Missing values are filled with safe defaults.
     """
 
-    run = state.get(
-        "verification_run"
-    )
+    if state is None:
+        return create_initial_state()
 
-    if isinstance(
-        run,
-        VerificationRun,
-    ):
-        return run
+    normalized: VerificationState = dict(state)
 
-    return None
+    defaults = create_initial_state()
 
+    for key, default_value in defaults.items():
+
+        if key not in normalized:
+            normalized[key] = deepcopy(
+                default_value
+            )
+            continue
+
+        # Do not allow None for structures that downstream code expects
+        # to be iterable.
+        if normalized[key] is None:
+
+            if isinstance(default_value, dict):
+                normalized[key] = deepcopy(
+                    default_value
+                )
+
+            elif isinstance(default_value, list):
+                normalized[key] = []
+
+            elif isinstance(default_value, str):
+                normalized[key] = ""
+
+    # Normalize lists.
+    for key in [
+        "errors",
+        "warnings",
+        "messages",
+        "agent_history",
+        "artifacts",
+        "generated_tests",
+    ]:
+        if not isinstance(
+            normalized.get(key),
+            list,
+        ):
+            normalized[key] = []
+
+    # Normalize dictionaries.
+    for key in [
+        "rtl_analysis",
+        "verification_plan",
+        "simulation",
+        "failure_analysis",
+        "coverage",
+        "red_team",
+        "mutation",
+        "formal",
+        "verification_judge",
+        "repair",
+        "metadata",
+    ]:
+        if not isinstance(
+            normalized.get(key),
+            dict,
+        ):
+            normalized[key] = {}
+
+    return normalized
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics
+# ---------------------------------------------------------------------------
 
 def add_error(
-    state: VerificationState,
+    state: dict[str, Any],
     message: str,
 ) -> VerificationState:
     """
-    Add an error to workflow state.
+    Add an error to the state.
     """
 
-    errors = list(
-        state.get(
-            "errors",
-            [],
-        )
+    normalized = ensure_state_defaults(
+        state
     )
 
-    errors.append(
-        str(message)
-    )
+    text = str(message).strip()
 
-    state["errors"] = errors
+    if text and text not in normalized["errors"]:
+        normalized["errors"].append(text)
 
-    return state
+    return normalized
 
 
 def add_warning(
-    state: VerificationState,
+    state: dict[str, Any],
     message: str,
 ) -> VerificationState:
     """
-    Add a warning to workflow state.
+    Add a warning to the state.
     """
 
-    warnings = list(
-        state.get(
-            "warnings",
-            [],
+    normalized = ensure_state_defaults(
+        state
+    )
+
+    text = str(message).strip()
+
+    if text and text not in normalized["warnings"]:
+        normalized["warnings"].append(text)
+
+    return normalized
+
+
+def add_message(
+    state: dict[str, Any],
+    message: str,
+) -> VerificationState:
+    """
+    Add an informational message.
+    """
+
+    normalized = ensure_state_defaults(
+        state
+    )
+
+    text = str(message).strip()
+
+    if text:
+        normalized["messages"].append(text)
+
+    return normalized
+
+
+# ---------------------------------------------------------------------------
+# Agent status
+# ---------------------------------------------------------------------------
+
+def update_agent_status(
+    state: dict[str, Any],
+    agent_name: str,
+    status: str,
+    message: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> VerificationState:
+    """
+    Update the current agent and append a history event.
+    """
+
+    normalized = ensure_state_defaults(
+        state
+    )
+
+    now = utc_now()
+
+    normalized["current_agent"] = (
+        str(agent_name)
+    )
+
+    normalized["current_step"] = (
+        str(agent_name)
+    )
+
+    normalized["agent_status"] = (
+        str(status)
+    )
+
+    event = {
+        "timestamp": now,
+        "agent": str(agent_name),
+        "status": str(status),
+        "message": str(message or ""),
+        "metadata": deepcopy(
+            metadata or {}
+        ),
+    }
+
+    normalized["agent_history"].append(
+        event
+    )
+
+    return normalized
+
+
+# ---------------------------------------------------------------------------
+# Stage result validation
+# ---------------------------------------------------------------------------
+
+def stage_has_result(
+    result: Any,
+) -> bool:
+    """
+    Return True when a stage has a meaningful result.
+
+    Empty dictionaries and empty strings are NOT valid successful results.
+    """
+
+    if result is None:
+        return False
+
+    if isinstance(result, dict):
+        if not result:
+            return False
+
+        status = str(
+            result.get(
+                "status",
+                "",
+            )
+        ).upper()
+
+        if status in {
+            STATUS_FAILED,
+            STATUS_FAIL,
+        }:
+            return False
+
+        return len(result) > 0
+
+    if isinstance(result, list):
+        return len(result) > 0
+
+    if isinstance(result, str):
+        return bool(
+            result.strip()
+        )
+
+    return True
+
+
+def stage_status(
+    result: Any,
+) -> str:
+    """
+    Safely retrieve a stage status.
+    """
+
+    if not isinstance(result, dict):
+        return STATUS_NOT_STARTED
+
+    return str(
+        result.get(
+            "status",
+            STATUS_NOT_STARTED,
         )
     )
 
-    warnings.append(
-        str(message)
+
+# ---------------------------------------------------------------------------
+# Score helpers
+# ---------------------------------------------------------------------------
+
+def clamp_score(
+    value: Any,
+    minimum: float = 0.0,
+    maximum: float = 100.0,
+) -> float:
+    """
+    Convert arbitrary input into a bounded score.
+    """
+
+    try:
+        score = float(value)
+    except (
+        TypeError,
+        ValueError,
+    ):
+        score = minimum
+
+    return max(
+        minimum,
+        min(
+            maximum,
+            score,
+        ),
     )
 
-    state["warnings"] = warnings
 
-    return state
-
+# ---------------------------------------------------------------------------
+# Public exports
+# ---------------------------------------------------------------------------
 
 __all__ = [
     "VerificationState",
+
+    "STATUS_NOT_STARTED",
+    "STATUS_RUNNING",
+    "STATUS_PASS",
+    "STATUS_FAIL",
+    "STATUS_FAILED",
+    "STATUS_SKIPPED",
+    "STATUS_DEGRADED",
+    "STATUS_COMPLETED",
+
+    "AGENT_NAMES",
+
     "create_initial_state",
-    "get_logger",
-    "get_verification_run",
+    "ensure_state_defaults",
+
+    "empty_rtl_analysis",
+    "empty_verification_plan",
+    "empty_simulation",
+    "empty_failure_analysis",
+    "empty_coverage",
+    "empty_red_team",
+    "empty_mutation",
+    "empty_formal",
+    "empty_judge",
+    "empty_repair",
+
     "add_error",
     "add_warning",
+    "add_message",
+
+    "update_agent_status",
+
+    "stage_has_result",
+    "stage_status",
+
+    "clamp_score",
+
+    "utc_now",
 ]
 
