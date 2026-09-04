@@ -1,32 +1,54 @@
+"""Automated Testbench Generator Agent."""
+
 from __future__ import annotations
-from .base import BaseAgent
-from core.state import VerificationState
-from config.settings import DEFAULT_CLOCK_PERIOD_NS, DEFAULT_TEST_TIMEOUT_NS, MAX_TESTBENCH_LINES
+
+from typing import Any, Dict
+from agents.base import BaseAgent
+
+TESTBENCH_GENERATOR_COT_PROMPT = """
+You are an Advanced Verification Engineer specializing in Universal Verification Methodology (UVM) and self-checking Verilog testbench synthesis.
+
+Analyze the RTL specification and analysis report to generate a rigorous, production-ready Verilog testbench.
+
+### Chain of Thought Instructions:
+1. **Stimulus Strategy**: Construct directed and pseudo-random test vectors targeting corner cases.
+2. **Clock & Reset Generation**: Implement accurate clock waveform generation and reset pulsing sequences.
+3. **Self-Checking Mechanisms**: Add automated scoreboard or expected-value comparison assertions.
+4. **Waveform Dumping**: Include standard VCD dump directives (`$dumpfile` and `$dumpvars`).
+
+### RTL Analysis Context:
+{rtl_analysis}
+"""
 
 class TestbenchGeneratorAgent(BaseAgent):
-    name = "Testbench"
-    step = 4
+    def __init__(self):
+        super().__init__(name="testbench_generator", step_index=4)
 
-    def run(self, state: VerificationState):
-        module_names = state.get("rtl_analysis", {}).get("module_names", [])
-        dut = module_names[0] if module_names else "dut"
-        tests = state.get("generated_tests", [])
-        body = []
-        body.append("`timescale 1ns/1ps")
-        body.append("module tb;")
-        body.append("  reg clk = 0;")
-        body.append("  reg reset = 0;")
-        body.append("  always #5 clk = ~clk;")
-        body.append(f"  {dut} uut();")
-        body.append("  initial begin")
-        body.append("    $display(\"PRAGYANAI_TESTBENCH_START\");")
-        body.append("    #1 reset = 1;")
-        body.append(f"    #{DEFAULT_CLOCK_PERIOD_NS * DEFAULT_TEST_TIMEOUT_NS} ;")
-        body.append("    $display(\"PRAGYANAI_TESTBENCH_PASS\");")
-        body.append("    $finish;")
-        body.append("  end")
-        body.append("endmodule")
-        code = "\n".join(body)
-        if len(code.splitlines()) > MAX_TESTBENCH_LINES:
-            raise ValueError("Generated testbench exceeds MAX_TESTBENCH_LINES")
-        return {"testbench": code, "test_count": len(tests)}
+    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        run_logger = state.get("logger")
+        
+        generated_testbench = """
+        module tb_auto_generated;
+            reg clk;
+            reg rst_n;
+            // Signals mapped here...
+            
+            initial begin
+                $dumpfile("simulation.vcd");
+                $dumpvars(0, tb_auto_generated);
+                clk = 0;
+                rst_n = 0;
+                #20 rst_n = 1;
+                #100 $finish;
+            end
+            
+            always #5 clk = ~clk;
+        endmodule
+        """
+
+        state["testbench_code"] = generated_testbench
+        if run_logger:
+            run_logger.write_code(self.name, "testbench.v", generated_testbench, self.step_index)
+
+        return state
+        
