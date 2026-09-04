@@ -33,70 +33,6 @@ One user verification request creates exactly one:
 
 The SAME ActivityLogger instance should be passed through the complete
 LangGraph workflow.
-
-Example
--------
-
-    from observability.run_manager import (
-        create_verification_run,
-        finalize_from_state,
-    )
-
-    run = create_verification_run(
-        metadata={
-            "project": "counter_4bit",
-            "source": "streamlit",
-        }
-    )
-
-    logger = run.logger
-
-    state = {
-        "run_id": run.run_id,
-        "logger": logger,
-    }
-
-    # Execute LangGraph workflow...
-
-    finalize_from_state(state)
-
-Expected directory
-------------------
-
-runtime/
-└── runs/
-    └── <run_id>/
-        ├── run_manifest.json
-        ├── artifact_manifest.json
-        ├── agent_activity.jsonl
-        ├── workflow.log
-        │
-        ├── 01_rtl_analysis/
-        ├── 02_planning/
-        ├── 03_test_generation/
-        ├── 04_testbench_generation/
-        ├── 05_simulation/
-        ├── 06_failure_analysis/
-        ├── 07_coverage/
-        ├── 08_red_team/
-        ├── 09_mutation/
-        ├── 10_formal/
-        └── 11_judge/
-
-Important
----------
-
-This module does NOT create a package called "logging".
-
-Use:
-
-    observability.activity_logger
-
-instead of:
-
-    logging.activity_logger
-
-This prevents collisions with Python's standard-library logging module.
 """
 
 from __future__ import annotations
@@ -105,6 +41,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -141,18 +78,16 @@ def create_run_id(
 
     timestamp = utc_now()
 
-    # Example:
-    #
-    # 2026-09-04T08:25:30.123456+00:00
-    #
-    # becomes:
-    #
-    # 20260904T082530
+    # Convert datetime object to ISO string format safely before running re.sub
+    if isinstance(timestamp, datetime):
+        timestamp_str = timestamp.isoformat()
+    else:
+        timestamp_str = str(timestamp)
 
     timestamp_text = re.sub(
         r"[^0-9]",
         "",
-        timestamp,
+        timestamp_str,
     )[:15]
 
     unique = uuid.uuid4().hex[:8]
@@ -178,29 +113,6 @@ def create_run_id(
 class VerificationRun:
     """
     Represents one complete RTL verification execution.
-
-    Attributes
-    ----------
-    run_id:
-        Unique identifier for this verification run.
-
-    run_dir:
-        Filesystem directory containing all run artifacts.
-
-    logger:
-        ONE ActivityLogger shared by all agents in this run.
-
-    started_at:
-        UTC timestamp at run creation.
-
-    metadata:
-        Metadata supplied by the caller.
-
-    status:
-        Current lifecycle state.
-
-    final_verdict:
-        Final judge verdict, if available.
     """
 
     run_id: str
@@ -219,62 +131,46 @@ class VerificationRun:
 
     final_verdict: Optional[str] = None
 
-    # ------------------------------------------------------------------------
-    # Convenience methods
-    # ------------------------------------------------------------------------
-
     def mark_running(self) -> None:
-        """
-        Mark this run as running.
-        """
-
+        """Mark this run as running."""
         self.status = "running"
-
-        self.logger.run_started(
-            metadata=self.metadata
-        )
+        if hasattr(self.logger, "run_started"):
+            self.logger.run_started(metadata=self.metadata)
 
     def mark_completed(
         self,
         verdict: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """
-        Mark this run as successfully completed.
-        """
-
+        """Mark this run as successfully completed."""
         self.status = "completed"
 
         if verdict is not None:
             self.final_verdict = str(verdict)
 
-        self.logger.run_completed(
-            verdict=self.final_verdict,
-            metadata=metadata,
-        )
+        if hasattr(self.logger, "run_completed"):
+            self.logger.run_completed(
+                verdict=self.final_verdict,
+                metadata=metadata,
+            )
 
     def mark_failed(
         self,
         error: Any,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """
-        Mark this run as failed.
-        """
-
+        """Mark this run as failed."""
         self.status = "failed"
-
-        self.logger.run_failed(
-            error,
-            metadata=metadata,
-        )
+        if hasattr(self.logger, "run_failed"):
+            self.logger.run_failed(
+                error,
+                metadata=metadata,
+            )
 
     def close(self) -> None:
-        """
-        Close the underlying ActivityLogger.
-        """
-
-        self.logger.close()
+        """Close the underlying ActivityLogger."""
+        if hasattr(self.logger, "close"):
+            self.logger.close()
 
 
 # ============================================================================
@@ -282,25 +178,9 @@ class VerificationRun:
 # ============================================================================
 
 def _resolve_run_root() -> Path:
-    """
-    Resolve the configured run root.
-
-    The preferred configuration is:
-
-        RUN_ROOT
-
-    If unavailable, fall back to:
-
-        RUNTIME_ROOT / "runs"
-
-    Finally fall back to:
-
-        runtime/runs
-    """
-
+    """Resolve the configured run root."""
     try:
         configured = RUN_ROOT
-
     except NameError:
         configured = None
 
@@ -309,7 +189,6 @@ def _resolve_run_root() -> Path:
 
     try:
         runtime_root = RUNTIME_ROOT
-
     except NameError:
         runtime_root = None
 
@@ -320,16 +199,9 @@ def _resolve_run_root() -> Path:
 
 
 def _resolve_log_root() -> Path:
-    """
-    Resolve the configured logging root.
-
-    LOG_ROOT is used as a compatibility fallback for deployments that
-    configure logs separately from run artifacts.
-    """
-
+    """Resolve the configured logging root."""
     try:
         configured = LOG_ROOT
-
     except NameError:
         configured = None
 
@@ -342,16 +214,12 @@ def _resolve_log_root() -> Path:
 def _ensure_run_directories(
     run_dir: Path,
 ) -> None:
-    """
-    Create the run directory and common artifact directories.
-    """
-
+    """Create the run directory and common artifact directories."""
     run_dir.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    # These directories make the artifact layout predictable.
     common_directories = [
         "state_snapshots",
         "01_rtl_analysis",
@@ -368,7 +236,6 @@ def _ensure_run_directories(
     ]
 
     for directory in common_directories:
-
         (
             run_dir / directory
         ).mkdir(
@@ -388,46 +255,7 @@ def create_verification_run(
     prefix: str = "run",
     mark_running: bool = True,
 ) -> VerificationRun:
-    """
-    Create exactly ONE verification run and ONE shared logger.
-
-    Parameters
-    ----------
-    metadata:
-        Optional run metadata.
-
-    run_id:
-        Optional explicit run ID. Normally leave this as None.
-
-    prefix:
-        Prefix for generated run IDs.
-
-    mark_running:
-        If True, immediately log run_started.
-
-    Returns
-    -------
-    VerificationRun
-        A run object containing the shared logger.
-
-    Example
-    -------
-
-        run = create_verification_run(
-            metadata={
-                "project": "counter_4bit",
-                "user_action": "verify",
-            }
-        )
-
-        logger = run.logger
-
-        state = {
-            "run_id": run.run_id,
-            "logger": logger,
-        }
-    """
-
+    """Create exactly ONE verification run and ONE shared logger."""
     final_run_id = (
         str(run_id)
         if run_id
@@ -447,10 +275,6 @@ def create_verification_run(
     _ensure_run_directories(
         run_dir
     )
-
-    # ------------------------------------------------------------------------
-    # Store environment information.
-    # ------------------------------------------------------------------------
 
     enriched_metadata = dict(
         metadata_dict
@@ -481,25 +305,16 @@ def create_verification_run(
         str(_resolve_log_root()),
     )
 
-    # ------------------------------------------------------------------------
-    # IMPORTANT:
-    #
-    # Exactly ONE ActivityLogger is created here.
-    #
-    # Do not create ActivityLogger inside individual agents.
-    # ------------------------------------------------------------------------
-
     logger = ActivityLogger(
         run_id=final_run_id,
         run_dir=run_dir,
-        metadata=enriched_metadata,
     )
 
     run = VerificationRun(
         run_id=final_run_id,
         run_dir=run_dir,
         logger=logger,
-        started_at=utc_now(),
+        started_at=utc_now().isoformat(),
         metadata=enriched_metadata,
         status="created",
     )
@@ -522,41 +337,7 @@ def finalize_verification_run(
     metadata: Optional[Mapping[str, Any]] = None,
     close_logger: bool = False,
 ) -> VerificationRun:
-    """
-    Finalize a VerificationRun.
-
-    Parameters
-    ----------
-    run:
-        VerificationRun returned by create_verification_run().
-
-    verdict:
-        Final verification verdict.
-
-        Typical values:
-
-            PASS
-            FAIL
-            INCONCLUSIVE
-            ERROR
-
-    status:
-        Explicit lifecycle status.
-
-        If omitted, it is inferred from the verdict.
-
-    metadata:
-        Additional final metadata.
-
-    close_logger:
-        If True, close the underlying logger after finalization.
-
-    Returns
-    -------
-    VerificationRun
-        The updated run object.
-    """
-
+    """Finalize a VerificationRun."""
     final_metadata = dict(
         metadata or {}
     )
@@ -566,12 +347,7 @@ def finalize_verification_run(
             verdict
         )
 
-    # ------------------------------------------------------------------------
-    # Infer status.
-    # ------------------------------------------------------------------------
-
     if status is None:
-
         normalized_verdict = (
             str(
                 run.final_verdict or ""
@@ -586,11 +362,8 @@ def finalize_verification_run(
             "ERROR",
             "CRASH",
         }:
-
             status = "failed"
-
         else:
-
             status = "completed"
 
     normalized_status = (
@@ -599,12 +372,7 @@ def finalize_verification_run(
         .lower()
     )
 
-    # ------------------------------------------------------------------------
-    # Finalize.
-    # ------------------------------------------------------------------------
-
     if normalized_status == "failed":
-
         run.mark_failed(
             error=final_metadata.get(
                 "error",
@@ -612,23 +380,17 @@ def finalize_verification_run(
             ),
             metadata=final_metadata,
         )
-
     else:
-
         run.mark_completed(
             verdict=run.final_verdict,
             metadata=final_metadata,
         )
 
-    # ------------------------------------------------------------------------
-    # Persist final run metadata.
-    # ------------------------------------------------------------------------
-
     final_manifest = {
         "run_id": run.run_id,
         "status": run.status,
         "started_at": run.started_at,
-        "completed_at": utc_now(),
+        "completed_at": utc_now().isoformat(),
         "final_verdict": run.final_verdict,
         "metadata": safe_json_value(
             {
@@ -641,13 +403,13 @@ def finalize_verification_run(
         ),
     }
 
-    run.logger.write_json(
-        "final_run_summary.json",
-        final_manifest,
-        artifact_type="run_summary",
-        agent="run_manager",
-        description="Final verification run summary",
-    )
+    if hasattr(run.logger, "write_json"):
+        run.logger.write_json(
+            agent="run_manager",
+            filename="final_run_summary.json",
+            data=final_manifest,
+            step=99,
+        )
 
     if close_logger:
         run.close()
@@ -664,17 +426,7 @@ def _get_state_value(
     key: str,
     default: Any = None,
 ) -> Any:
-    """
-    Safely retrieve a value from a LangGraph state object.
-
-    Supports:
-
-        dict
-        Mapping
-        simple objects
-        dataclasses exposing attributes
-    """
-
+    """Safely retrieve a value from a LangGraph state object."""
     if state is None:
         return default
 
@@ -690,7 +442,6 @@ def _get_state_value(
             key,
             default,
         )
-
     except Exception:
         return default
 
@@ -698,10 +449,7 @@ def _get_state_value(
 def _extract_verdict(
     state: Any,
 ) -> Optional[str]:
-    """
-    Extract the final judge verdict from common state field names.
-    """
-
+    """Extract the final judge verdict from common state field names."""
     candidate_keys = [
         "final_verdict",
         "verdict",
@@ -712,7 +460,6 @@ def _extract_verdict(
     ]
 
     for key in candidate_keys:
-
         value = _get_state_value(
             state,
             key,
@@ -723,20 +470,16 @@ def _extract_verdict(
             continue
 
         if isinstance(value, str):
-
             value = value.strip()
-
             if value:
                 return value
 
         elif isinstance(value, Mapping):
-
             nested = (
                 value.get("verdict")
                 or value.get("final_verdict")
                 or value.get("status")
             )
-
             if nested:
                 return str(nested)
 
@@ -746,10 +489,7 @@ def _extract_verdict(
 def _extract_status(
     state: Any,
 ) -> Optional[str]:
-    """
-    Extract workflow status from common state field names.
-    """
-
+    """Extract workflow status from common state field names."""
     candidate_keys = [
         "run_status",
         "status",
@@ -758,7 +498,6 @@ def _extract_status(
     ]
 
     for key in candidate_keys:
-
         value = _get_state_value(
             state,
             key,
@@ -769,9 +508,7 @@ def _extract_status(
             continue
 
         if isinstance(value, str):
-
             value = value.strip()
-
             if value:
                 return value
 
@@ -785,111 +522,34 @@ def finalize_from_state(
     metadata: Optional[Mapping[str, Any]] = None,
     close_logger: bool = False,
 ) -> Optional[VerificationRun]:
-    """
-    Finalize a verification run using LangGraph state.
-
-    The function first tries to use an explicitly supplied run.
-
-    If no run is supplied, it looks for:
-
-        state["verification_run"]
-
-    or:
-
-        state["run"]
-
-    If neither exists, it attempts to find the shared logger.
-
-    Expected state example
-    ----------------------
-
-        {
-            "run_id": "run_20260904...",
-            "logger": logger,
-            "verification_run": run,
-            "final_verdict": "PASS",
-        }
-
-    Recommended usage
-    ------------------
-
-        run = create_verification_run(...)
-
-        state = {
-            "verification_run": run,
-            "run_id": run.run_id,
-            "logger": run.logger,
-        }
-
-        # LangGraph execution
-
-        finalize_from_state(state)
-
-    Returns
-    -------
-
-    VerificationRun or None
-        None if a VerificationRun could not be identified.
-    """
-
-    # ------------------------------------------------------------------------
-    # 1. Explicit run takes priority.
-    # ------------------------------------------------------------------------
-
+    """Finalize a verification run using LangGraph state."""
     resolved_run = run
 
-    # ------------------------------------------------------------------------
-    # 2. Look inside state.
-    # ------------------------------------------------------------------------
-
     if resolved_run is None:
-
         candidate = _get_state_value(
             state,
             "verification_run",
             None,
         )
-
-        if isinstance(
-            candidate,
-            VerificationRun,
-        ):
-
+        if isinstance(candidate, VerificationRun):
             resolved_run = candidate
 
     if resolved_run is None:
-
         candidate = _get_state_value(
             state,
             "run",
             None,
         )
-
-        if isinstance(
-            candidate,
-            VerificationRun,
-        ):
-
+        if isinstance(candidate, VerificationRun):
             resolved_run = candidate
 
-    # ------------------------------------------------------------------------
-    # 3. If we don't have the run object but have a logger, reconstruct the
-    #    minimum VerificationRun wrapper.
-    # ------------------------------------------------------------------------
-
     if resolved_run is None:
-
         logger = _get_state_value(
             state,
             "logger",
             None,
         )
-
-        if isinstance(
-            logger,
-            ActivityLogger,
-        ):
-
+        if isinstance(logger, ActivityLogger):
             run_id = str(
                 _get_state_value(
                     state,
@@ -915,35 +575,18 @@ def finalize_from_state(
                     _get_state_value(
                         state,
                         "started_at",
-                        logger.created_at,
+                        utc_now().isoformat(),
                     )
                 ),
                 metadata=metadata_dict,
                 status="running",
             )
 
-    # ------------------------------------------------------------------------
-    # 4. Cannot finalize without run/logger.
-    # ------------------------------------------------------------------------
-
     if resolved_run is None:
         return None
 
-    # ------------------------------------------------------------------------
-    # 5. Extract verdict/status.
-    # ------------------------------------------------------------------------
-
-    verdict = _extract_verdict(
-        state
-    )
-
-    status = _extract_status(
-        state
-    )
-
-    # ------------------------------------------------------------------------
-    # 6. Add useful final-state metadata.
-    # ------------------------------------------------------------------------
+    verdict = _extract_verdict(state)
+    status = _extract_status(state)
 
     final_metadata = dict(
         metadata or {}
@@ -954,77 +597,38 @@ def finalize_from_state(
         "langgraph_state",
     )
 
-    # Store iteration if available.
     iteration = _get_state_value(
         state,
         "iteration",
         None,
     )
-
     if iteration is not None:
-        final_metadata.setdefault(
-            "iteration",
-            iteration,
-        )
+        final_metadata.setdefault("iteration", iteration)
 
-    # Store verification score if available.
     score = _get_state_value(
         state,
         "verification_score",
         None,
     )
-
     if score is not None:
-        final_metadata.setdefault(
-            "verification_score",
-            score,
-        )
+        final_metadata.setdefault("verification_score", score)
 
-    # Store coverage if available.
     coverage = _get_state_value(
         state,
         "coverage",
         None,
     )
-
     if coverage is not None:
-        final_metadata.setdefault(
-            "coverage",
-            coverage,
-        )
+        final_metadata.setdefault("coverage", coverage)
 
-    # Store failures if available.
     failures = _get_state_value(
         state,
         "failures",
         None,
     )
-
     if failures is not None:
-
-        if isinstance(
-            failures,
-            (list, tuple),
-        ):
-
-            final_metadata.setdefault(
-                "failure_count",
-                len(failures),
-            )
-
-        elif isinstance(
-            failures,
-            Mapping,
-        ):
-
-            final_metadata.setdefault(
-                "failure_count",
-                len(failures),
-            )
-
-    # ------------------------------------------------------------------------
-    # 7. Finalize.
-    # ------------------------------------------------------------------------
+        if isinstance(failures, (list, tuple, Mapping)):
+            final_metadata.setdefault("failure_count", len(failures))
 
     return finalize_verification_run(
         resolved_run,
@@ -1039,36 +643,18 @@ def finalize_from_state(
 # Convenience helpers
 # ============================================================================
 
-def get_run_directory(
-    run: VerificationRun,
-) -> Path:
-    """
-    Return the filesystem directory for a verification run.
-    """
-
+def get_run_directory(run: VerificationRun) -> Path:
+    """Return the filesystem directory for a verification run."""
     return run.run_dir
 
 
-def get_run_id(
-    run: VerificationRun,
-) -> str:
-    """
-    Return the run ID.
-    """
-
+def get_run_id(run: VerificationRun) -> str:
+    """Return the run ID."""
     return run.run_id
 
 
-def get_run_logger(
-    run: VerificationRun,
-) -> ActivityLogger:
-    """
-    Return the shared ActivityLogger.
-
-    This helper makes it explicit that agents should use the same
-    logger rather than creating their own.
-    """
-
+def get_run_logger(run: VerificationRun) -> ActivityLogger:
+    """Return the shared ActivityLogger."""
     return run.logger
 
 
@@ -1086,4 +672,3 @@ __all__ = [
     "get_run_id",
     "get_run_logger",
 ]
-
