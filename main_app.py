@@ -2,82 +2,140 @@
 PragyanAI SiliconAI
 ===================
 
-Streamlit UI for the Agentic RTL / Verilog Verification Platform.
+Streamlit application for the Agentic RTL / Verilog Verification Platform.
 
 Pipeline
 --------
 
 Specification
-      ↓
-RTL Analyzer
-      ↓
-Verification Planner
-      ↓
-Test Generator
-      ↓
-Testbench Generator
-      ↓
+    ↓
+RTL Analysis
+    ↓
+Verification Planning
+    ↓
+Test Generation
+    ↓
+Testbench Generation
+    ↓
 Simulation
-      ↓
-Failure Analyzer
-      ↓
+    ↓
+Failure Analysis
+    ↓
 Coverage
-      ↓
+    ↓
 Red Team
-      ↓
+    ↓
 Mutation
-      ↓
+    ↓
 Formal
-      ↓
+    ↓
 Verification Judge
-      ↓
-Final Verdict
 
-Run:
+Important
+---------
 
-    streamlit run main_app.py
+This application is only the UI/orchestration layer.
 
-Environment:
+Verification evidence must come from deterministic tooling wherever
+possible, especially Icarus Verilog simulation.
 
-    GROQ_API_KEY=...
+LLMs are used for:
+    * RTL understanding
+    * planning
+    * test generation
+    * explanation
 
-Optional:
-
-    GROQ_MODEL=llama-3.3-70b-versatile
+LLMs are NOT trusted as proof that RTL simulation passed.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import traceback
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-import streamlit as st
+
+# ============================================================================
+# Configuration
+# ============================================================================
 
 from config.settings import (
     APP_NAME,
     APP_VERSION,
+    APP_DESCRIPTION,
+
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_RUN_FORMAL,
     DEFAULT_RUN_MUTATION,
+
+    ENABLE_FORMAL,
+    ENABLE_MUTATION,
     ENABLE_RED_TEAM,
-    GROQ_API_KEY,
+
     GROQ_MODEL,
+
     MAX_RTL_CHARS,
     MAX_SPEC_CHARS,
+
     STREAMLIT_PAGE_ICON,
     STREAMLIT_PAGE_TITLE,
+
+    RUNTIME_ROOT,
+    RUN_ROOT,
+
     get_settings_summary,
     iverilog_available,
     vvp_available,
 )
 
+
+# ============================================================================
+# Core
+# ============================================================================
+
+from core.llm import (
+    check_llm_available,
+    get_model_name,
+)
+
+from core.state import (
+    VerificationState,
+    create_initial_state,
+    ensure_state_defaults,
+    stage_has_result,
+)
+
+
+# ============================================================================
+# Observability
+# ============================================================================
+
+from observability.run_manager import (
+    create_verification_run,
+    finalize_from_state,
+    finalize_verification_run,
+)
+
+
+# ============================================================================
+# Workflow
+# ============================================================================
+
 from graph.workflow import run_workflow
 
 
-# =============================================================================
-# STREAMLIT PAGE CONFIGURATION
-# =============================================================================
+# ============================================================================
+# Streamlit
+# ============================================================================
+
+import streamlit as st
+
+
+# ============================================================================
+# Page configuration
+# ============================================================================
 
 st.set_page_config(
     page_title=STREAMLIT_PAGE_TITLE,
@@ -87,221 +145,247 @@ st.set_page_config(
 )
 
 
-# =============================================================================
-# APPLICATION PATHS
-# =============================================================================
+# ============================================================================
+# Constants
+# ============================================================================
 
-ROOT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent
 
-EXAMPLES_DIR = (
-    ROOT_DIR
+SAMPLE_ROOT = (
+    PROJECT_ROOT
     / "examples"
-)
-
-SAMPLE_PROJECTS_DIR = (
-    EXAMPLES_DIR
     / "sample_projects"
 )
 
-RUNTIME_DIR = (
-    ROOT_DIR
-    / "runtime"
-)
+DEFAULT_SPECIFICATION = """Design a synchronous 4-bit up counter.
 
-RUNS_DIR = (
-    RUNTIME_DIR
-    / "runs"
-)
+Functional requirements:
+
+1. The counter is driven by a rising-edge clock.
+2. reset is synchronous and active high.
+3. When reset is asserted, count must become 0.
+4. When reset is deasserted and enable is high, count increments by 1.
+5. When enable is low, count must hold its current value.
+6. The counter is 4 bits wide.
+7. After 15, the next increment wraps to 0.
+8. The design must operate deterministically on every rising clock edge.
+"""
+
+DEFAULT_RTL = """`timescale 1ns/1ps
+
+module counter (
+    input wire       clk,
+    input wire       reset,
+    input wire       enable,
+    output reg [3:0] count
+);
+
+    always @(posedge clk) begin
+        if (reset) begin
+            count <= 4'b0000;
+        end
+        else if (enable) begin
+            count <= count + 4'b0001;
+        end
+    end
+
+endmodule
+"""
+
+DEFAULT_TESTBENCH = """`timescale 1ns/1ps
+
+module tb_counter;
+
+    reg clk;
+    reg reset;
+    reg enable;
+
+    wire [3:0] count;
+
+    counter dut (
+        .clk(clk),
+        .reset(reset),
+        .enable(enable),
+        .count(count)
+    );
+
+    initial begin
+        clk = 1'b0;
+        forever #5 clk = ~clk;
+    end
+
+    initial begin
+
+        reset = 1'b1;
+        enable = 1'b0;
+
+        #10;
+
+        if (count !== 4'd0)
+            $display("FAIL: reset");
+
+        reset = 1'b0;
+        enable = 1'b1;
+
+        #10;
+
+        if (count !== 4'd1)
+            $display("FAIL: increment");
+
+        enable = 1'b0;
+
+        #10;
+
+        if (count !== 4'd1)
+            $display("FAIL: hold");
+
+        $display("PASS: counter verification");
+
+        $finish;
+    end
+
+endmodule
+"""
 
 
-# =============================================================================
-# SESSION STATE
-# =============================================================================
+# ============================================================================
+# Utility functions
+# ============================================================================
 
-DEFAULT_SESSION_VALUES: Dict[str, Any] = {
-    "project_name": "custom_rtl",
-    "specification": "",
-    "rtl_code": "",
-    "reference_testbench": "",
-    "reference_test_vectors": [],
-    "last_state": None,
-    "last_run_id": None,
-    "verification_started": False,
-}
-
-
-for key, value in DEFAULT_SESSION_VALUES.items():
-
-    if key not in st.session_state:
-        st.session_state[key] = value
-
-
-# =============================================================================
-# UTILITY FUNCTIONS
-# =============================================================================
-
-def safe_read_text(
-    path: Path,
-    default: str = "",
-) -> str:
-    """
-    Safely read a UTF-8 text file.
-    """
-
-    try:
-
-        if not path.exists():
-            return default
-
-        return path.read_text(
-            encoding="utf-8"
-        )
-
-    except Exception:
-
-        return default
-
-
-def safe_read_json(
-    path: Path,
-    default: Any = None,
+def safe_json(
+    value: Any,
 ) -> Any:
     """
-    Safely read a JSON file.
+    Convert arbitrary Python objects into JSON-safe structures.
     """
+
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        (
+            str,
+            int,
+            float,
+            bool,
+        ),
+    ):
+        return value
+
+    if isinstance(
+        value,
+        Path,
+    ):
+        return str(value)
+
+    if isinstance(
+        value,
+        dict,
+    ):
+        return {
+            str(key): safe_json(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+        ),
+    ):
+        return [
+            safe_json(item)
+            for item in value
+        ]
 
     try:
-
-        if not path.exists():
-            return default
-
-        with path.open(
-            "r",
-            encoding="utf-8",
-        ) as handle:
-
-            return json.load(handle)
+        json.dumps(value)
+        return value
 
     except Exception:
-
-        return default
-
-
-def list_sample_projects() -> Dict[str, Path]:
-    """
-    Discover available sample projects.
-
-    A sample project is considered valid when it contains at least:
-
-        spec.md
-        rtl.v
-    """
-
-    projects: Dict[str, Path] = {}
-
-    if not SAMPLE_PROJECTS_DIR.exists():
-        return projects
-
-    try:
-
-        directories = sorted(
-            SAMPLE_PROJECTS_DIR.iterdir(),
-            key=lambda item: item.name.lower(),
-        )
-
-    except Exception:
-
-        return projects
-
-    for directory in directories:
-
-        if not directory.is_dir():
-            continue
-
-        if directory.name.startswith("."):
-            continue
-
-        specification_file = (
-            directory
-            / "spec.md"
-        )
-
-        rtl_file = (
-            directory
-            / "rtl.v"
-        )
-
-        if (
-            specification_file.exists()
-            and rtl_file.exists()
-        ):
-
-            projects[
-                directory.name
-            ] = directory
-
-    return projects
+        return str(value)
 
 
-def load_sample_project(
-    project_dir: Path,
-) -> Dict[str, Any]:
-    """
-    Load all supported files from a sample project.
-    """
-
-    return {
-        "name": project_dir.name,
-
-        "specification": safe_read_text(
-            project_dir / "spec.md"
-        ),
-
-        "rtl": safe_read_text(
-            project_dir / "rtl.v"
-        ),
-
-        "testbench": safe_read_text(
-            project_dir / "testbench.v"
-        ),
-
-        "test_vectors": safe_read_json(
-            project_dir / "test_vectors.json",
-            default=[],
-        ),
-
-        "readme": safe_read_text(
-            project_dir / "README.md"
-        ),
-    }
-
-
-def format_verdict(
-    verdict: Any,
+def pretty_json(
+    value: Any,
 ) -> str:
     """
-    Normalize final verdict.
+    Pretty JSON for Streamlit display.
     """
 
-    if verdict is None:
-        return "NOT_RUN"
+    try:
+        return json.dumps(
+            safe_json(value),
+            indent=2,
+            ensure_ascii=False,
+            default=str,
+        )
 
-    text = str(verdict).strip()
-
-    if not text:
-        return "NOT_RUN"
-
-    return text.upper()
+    except Exception:
+        return str(value)
 
 
-def safe_float(
+def truncate_text(
+    text: Any,
+    maximum: int = 20_000,
+) -> str:
+    """
+    Prevent huge outputs from overwhelming the Streamlit page.
+    """
+
+    value = str(
+        text or ""
+    )
+
+    if len(value) <= maximum:
+        return value
+
+    return (
+        value[:maximum]
+        + "\n\n...[output truncated]..."
+    )
+
+
+def status_value(
+    result: Any,
+) -> str:
+    """
+    Safely get a status.
+    """
+
+    if not isinstance(
+        result,
+        dict,
+    ):
+        return "NOT_STARTED"
+
+    return str(
+        result.get(
+            "status",
+            "NOT_STARTED",
+        )
+    ).upper()
+
+
+def result_exists(
+    result: Any,
+) -> bool:
+    """
+    Return whether a stage contains meaningful evidence.
+    """
+
+    return stage_has_result(
+        result
+    )
+
+
+def score_value(
     value: Any,
     default: float = 0.0,
 ) -> float:
-    """
-    Convert a value to float safely.
-    """
-
     try:
         return float(value)
 
@@ -309,209 +393,403 @@ def safe_float(
         TypeError,
         ValueError,
     ):
-
         return default
 
 
-def render_code(
-    code: Any,
-    language: str = "text",
-) -> None:
+def percent_text(
+    value: Any,
+) -> str:
+    return f"{score_value(value):.1f}%"
+
+
+# ============================================================================
+# Sample project helpers
+# ============================================================================
+
+def discover_sample_projects() -> list[str]:
     """
-    Render source code safely.
+    Discover sample project directories.
     """
 
-    if code is None:
-        st.info("No code available.")
-        return
+    if not SAMPLE_ROOT.exists():
+        return []
 
-    text = str(code)
+    projects = []
 
-    if not text.strip():
+    for item in sorted(
+        SAMPLE_ROOT.iterdir()
+    ):
 
-        st.info("No code available.")
-        return
+        if not item.is_dir():
+            continue
 
-    st.code(
-        text,
-        language=language,
+        if item.name.startswith("."):
+            continue
+
+        if (
+            (item / "spec.md").exists()
+            and (item / "rtl.v").exists()
+        ):
+            projects.append(
+                item.name
+            )
+
+    return projects
+
+
+def load_sample_project(
+    project_name: str,
+) -> dict[str, Any]:
+    """
+    Load a sample project's specification, RTL, testbench and vectors.
+    """
+
+    project_dir = (
+        SAMPLE_ROOT
+        / project_name
+    )
+
+    if not project_dir.exists():
+        raise FileNotFoundError(
+            f"Sample project not found: {project_name}"
+        )
+
+    def read_file(
+        filename: str,
+    ) -> str:
+
+        path = (
+            project_dir
+            / filename
+        )
+
+        if not path.exists():
+            return ""
+
+        return path.read_text(
+            encoding="utf-8"
+        )
+
+    vectors_text = read_file(
+        "test_vectors.json"
+    )
+
+    vectors: Any = []
+
+    if vectors_text.strip():
+
+        try:
+            vectors = json.loads(
+                vectors_text
+            )
+
+        except json.JSONDecodeError:
+            vectors = vectors_text
+
+    return {
+        "project_name": project_name,
+        "specification": read_file(
+            "spec.md"
+        ),
+        "rtl_code": read_file(
+            "rtl.v"
+        ),
+        "reference_testbench": read_file(
+            "testbench.v"
+        ),
+        "reference_test_vectors": vectors,
+        "readme": read_file(
+            "README.md"
+        ),
+    }
+
+
+# ============================================================================
+# Run helpers
+# ============================================================================
+
+def prepare_run(
+    project_name: str,
+    specification: str,
+    rtl_code: str,
+    reference_testbench: str,
+    reference_test_vectors: Any,
+    max_iterations: int,
+    run_mutation: bool,
+    run_formal: bool,
+    run_red_team: bool,
+) -> tuple[Any, VerificationState]:
+    """
+    Create exactly one VerificationRun and exactly one shared logger.
+    """
+
+    metadata = {
+        "source": "streamlit",
+        "project_name": project_name,
+        "rtl_characters": len(
+            rtl_code
+        ),
+        "specification_characters": len(
+            specification
+        ),
+        "reference_testbench_characters": len(
+            reference_testbench
+        ),
+        "max_iterations": int(
+            max_iterations
+        ),
+        "run_mutation": bool(
+            run_mutation
+        ),
+        "run_formal": bool(
+            run_formal
+        ),
+        "run_red_team": bool(
+            run_red_team
+        ),
+        "llm_model": get_model_name(),
+    }
+
+    verification_run = (
+        create_verification_run(
+            metadata=metadata
+        )
+    )
+
+    state = create_initial_state(
+        specification=specification,
+        rtl_code=rtl_code,
+        project_name=project_name,
+        reference_testbench=reference_testbench,
+        reference_test_vectors=reference_test_vectors,
+        max_iterations=max_iterations,
+        run_mutation=run_mutation,
+        run_formal=run_formal,
+        run_red_team=run_red_team,
+        run_id=verification_run.run_id,
+        run_dir=str(
+            verification_run.run_dir
+        ),
+        metadata=metadata,
+    )
+
+    state["logger"] = (
+        verification_run.logger
+    )
+
+    state["verification_run"] = (
+        verification_run
+    )
+
+    return (
+        verification_run,
+        state,
     )
 
 
-def render_json(
-    value: Any,
-) -> None:
+def execute_workflow(
+    *,
+    verification_run: Any,
+    state: VerificationState,
+) -> VerificationState:
     """
-    Render arbitrary Python data as JSON.
+    Execute the verification workflow.
+
+    The workflow implementation is allowed to accept either:
+
+        run_workflow(state)
+
+    or the richer keyword-based interface.
+
+    We prefer the richer interface.
     """
 
-    if value is None:
-
-        st.info("No data available.")
-        return
+    # ------------------------------------------------------------------
+    # Primary API
+    # ------------------------------------------------------------------
 
     try:
 
-        st.json(value)
+        result = run_workflow(
+            specification=state[
+                "specification"
+            ],
+            rtl_code=state[
+                "rtl_code"
+            ],
+            project_name=state[
+                "project_name"
+            ],
+            reference_testbench=state[
+                "reference_testbench"
+            ],
+            reference_test_vectors=state[
+                "reference_test_vectors"
+            ],
+            max_iterations=state[
+                "max_iterations"
+            ],
+            run_mutation=state[
+                "run_mutation"
+            ],
+            run_formal=state[
+                "run_formal"
+            ],
+            run_red_team=state[
+                "run_red_team"
+            ],
+            metadata=state[
+                "metadata"
+            ],
+            verification_run=verification_run,
+        )
+
+        if result is None:
+            raise RuntimeError(
+                "Verification workflow returned None."
+            )
+
+        return ensure_state_defaults(
+            result
+        )
+
+    except TypeError as exc:
+
+        # ------------------------------------------------------------------
+        # Compatibility API
+        # ------------------------------------------------------------------
+        #
+        # Some intermediate versions of graph/workflow.py may not yet
+        # accept verification_run. Retry without that argument.
+        #
+        # This makes deployment migration easier.
+        # ------------------------------------------------------------------
+
+        if "verification_run" not in str(
+            exc
+        ):
+            raise
+
+        result = run_workflow(
+            specification=state[
+                "specification"
+            ],
+            rtl_code=state[
+                "rtl_code"
+            ],
+            project_name=state[
+                "project_name"
+            ],
+            reference_testbench=state[
+                "reference_testbench"
+            ],
+            reference_test_vectors=state[
+                "reference_test_vectors"
+            ],
+            max_iterations=state[
+                "max_iterations"
+            ],
+            run_mutation=state[
+                "run_mutation"
+            ],
+            run_formal=state[
+                "run_formal"
+            ],
+            run_red_team=state[
+                "run_red_team"
+            ],
+            metadata=state[
+                "metadata"
+            ],
+        )
+
+        if result is None:
+            raise RuntimeError(
+                "Verification workflow returned None."
+            )
+
+        result = ensure_state_defaults(
+            result
+        )
+
+        # Restore run-level observability references if the workflow
+        # implementation did not preserve them.
+        result["run_id"] = (
+            verification_run.run_id
+        )
+
+        result["run_dir"] = str(
+            verification_run.run_dir
+        )
+
+        result["logger"] = (
+            verification_run.logger
+        )
+
+        result["verification_run"] = (
+            verification_run
+        )
+
+        return result
+
+
+# ============================================================================
+# Finalization
+# ============================================================================
+
+def finalize_run(
+    verification_run: Any,
+    state: VerificationState,
+) -> VerificationState:
+    """
+    Finalize the run and preserve the final state.
+    """
+
+    normalized = ensure_state_defaults(
+        state
+    )
+
+    normalized["completed_at"] = (
+        __import__(
+            "datetime"
+        ).datetime.now(
+            __import__(
+                "datetime"
+            ).timezone.utc
+        ).isoformat()
+    )
+
+    try:
+
+        finalize_from_state(
+            normalized
+        )
 
     except Exception:
 
-        st.code(
-            str(value)
-        )
+        try:
 
-
-def count_items(
-    value: Any,
-) -> int:
-    """
-    Return a useful count for lists/dictionaries.
-    """
-
-    if isinstance(
-        value,
-        (list, tuple, set),
-    ):
-
-        return len(value)
-
-    if isinstance(
-        value,
-        dict,
-    ):
-
-        return len(value)
-
-    if value is None:
-        return 0
-
-    return 1
-
-
-def get_run_directory_from_state(
-    state: Dict[str, Any],
-) -> Optional[Path]:
-    """
-    Get the run directory from VerificationRun.
-    """
-
-    verification_run = state.get(
-        "verification_run"
-    )
-
-    if verification_run is not None:
-
-        run_dir = getattr(
-            verification_run,
-            "run_dir",
-            None,
-        )
-
-        if run_dir:
-
-            return Path(
-                run_dir
+            finalize_verification_run(
+                verification_run,
+                state=normalized,
             )
 
-    run_id = state.get(
-        "run_id"
-    )
+        except Exception:
+            pass
 
-    if run_id:
-
-        candidate = (
-            RUNS_DIR
-            / str(run_id)
-        )
-
-        if candidate.exists():
-            return candidate
-
-    return None
+    return normalized
 
 
-def read_activity_log(
-    run_dir: Optional[Path],
-) -> str:
-    """
-    Read the structured activity log for a run.
-    """
-
-    if run_dir is None:
-        return ""
-
-    path = (
-        run_dir
-        / "agent_activity.jsonl"
-    )
-
-    if not path.exists():
-        return ""
-
-    return safe_read_text(
-        path
-    )
-
-
-def read_workflow_log(
-    run_dir: Optional[Path],
-) -> str:
-    """
-    Read human-readable workflow log.
-    """
-
-    if run_dir is None:
-        return ""
-
-    path = (
-        run_dir
-        / "workflow.log"
-    )
-
-    if not path.exists():
-        return ""
-
-    return safe_read_text(
-        path
-    )
-
-
-def load_manifest(
-    run_dir: Optional[Path],
-    filename: str,
-) -> Dict[str, Any]:
-    """
-    Load a JSON manifest from a run directory.
-    """
-
-    if run_dir is None:
-        return {}
-
-    value = safe_read_json(
-        run_dir / filename,
-        default={},
-    )
-
-    if isinstance(
-        value,
-        dict,
-    ):
-
-        return value
-
-    return {}
-
-
-# =============================================================================
-# HEADER
-# =============================================================================
+# ============================================================================
+# UI: Header
+# ============================================================================
 
 st.title(
     f"🧪 {APP_NAME}"
 )
 
 st.caption(
-    f"Agentic RTL / Verilog Verification Platform • v{APP_VERSION}"
+    f"{APP_DESCRIPTION} • v{APP_VERSION}"
 )
 
 st.markdown(
@@ -525,667 +803,783 @@ st.markdown(
 )
 
 
-# =============================================================================
-# SIDEBAR
-# =============================================================================
+# ============================================================================
+# Sidebar
+# ============================================================================
 
 with st.sidebar:
 
     st.header(
-        "⚙️ Verification Configuration"
+        "⚙️ Configuration"
     )
 
-    # -------------------------------------------------------------------------
-    # Sample project
-    # -------------------------------------------------------------------------
+    st.markdown(
+        "### Verification Engines"
+    )
 
-    sample_projects = list_sample_projects()
+    st.write(
+        "Icarus Verilog:",
+        "✅ Available"
+        if iverilog_available()
+        else "❌ Not available",
+    )
 
-    sample_options: List[str] = [
-        "Custom RTL"
-    ]
+    st.write(
+        "VVP:",
+        "✅ Available"
+        if vvp_available()
+        else "❌ Not available",
+    )
 
-    sample_options.extend(
-        list(
-            sample_projects.keys()
+    st.write(
+        "Groq:",
+        "✅ Configured"
+        if os.getenv(
+            "GROQ_API_KEY",
+            ""
         )
+        else "⚠️ Check Secrets",
     )
 
-    selected_sample = st.selectbox(
-        "Sample Project",
-        sample_options,
-        key="selected_sample_project",
+    st.write(
+        "LLM Model:",
+        get_model_name(),
     )
 
-    if st.button(
-        "📦 Load Sample",
-        use_container_width=True,
-    ):
+    st.divider()
 
-        if selected_sample == "Custom RTL":
-
-            st.session_state.project_name = (
-                "custom_rtl"
-            )
-
-            st.session_state.specification = ""
-            st.session_state.rtl_code = ""
-            st.session_state.reference_testbench = ""
-            st.session_state.reference_test_vectors = []
-
-            st.success(
-                "Custom RTL mode selected."
-            )
-
-        else:
-
-            project_dir = (
-                sample_projects[
-                    selected_sample
-                ]
-            )
-
-            sample = load_sample_project(
-                project_dir
-            )
-
-            st.session_state.project_name = (
-                sample["name"]
-            )
-
-            st.session_state.specification = (
-                sample["specification"]
-            )
-
-            st.session_state.rtl_code = (
-                sample["rtl"]
-            )
-
-            st.session_state.reference_testbench = (
-                sample["testbench"]
-            )
-
-            st.session_state.reference_test_vectors = (
-                sample["test_vectors"]
-            )
-
-            st.success(
-                f"Loaded sample: {selected_sample}"
-            )
-
-    # -------------------------------------------------------------------------
-    # Iteration settings
-    # -------------------------------------------------------------------------
-
-    st.subheader(
-        "Verification Loop"
+    st.markdown(
+        "### Optional Stages"
     )
 
-    max_iterations = st.number_input(
-        "Maximum Iterations",
-        min_value=1,
-        max_value=10,
-        value=int(
-            DEFAULT_MAX_ITERATIONS
-        ),
-        step=1,
-        help=(
-            "Maximum number of verification iterations."
-        ),
-    )
-
-    # -------------------------------------------------------------------------
-    # Optional verification stages
-    # -------------------------------------------------------------------------
-
-    st.subheader(
-        "Verification Engines"
-    )
-
-    run_red_team = st.checkbox(
-        "🛡️ Red-Team Testing",
+    enable_red_team_ui = st.checkbox(
+        "Run Red-Team Verification",
         value=bool(
             ENABLE_RED_TEAM
         ),
     )
 
-    run_mutation = st.checkbox(
-        "🧬 Mutation Testing",
+    enable_mutation_ui = st.checkbox(
+        "Run Mutation Testing",
         value=bool(
             DEFAULT_RUN_MUTATION
+            and ENABLE_MUTATION
         ),
     )
 
-    run_formal = st.checkbox(
-        "🔬 Formal Verification",
+    enable_formal_ui = st.checkbox(
+        "Run Formal Verification",
         value=bool(
             DEFAULT_RUN_FORMAL
-        ),
-        help=(
-            "Formal backend is optional and disabled by default."
+            and ENABLE_FORMAL
         ),
     )
 
-    # -------------------------------------------------------------------------
-    # Tool status
-    # -------------------------------------------------------------------------
+    max_iterations_ui = st.slider(
+        "Maximum Verification Iterations",
+        min_value=1,
+        max_value=5,
+        value=max(
+            1,
+            min(
+                5,
+                int(
+                    DEFAULT_MAX_ITERATIONS
+                ),
+            ),
+        ),
+    )
 
     st.divider()
 
-    st.subheader(
-        "EDA Tool Status"
+    st.markdown(
+        "### Diagnostics"
     )
-
-    if iverilog_available():
-
-        st.success(
-            "✓ Icarus Verilog available"
-        )
-
-    else:
-
-        st.warning(
-            "⚠ Icarus Verilog unavailable"
-        )
-
-    if vvp_available():
-
-        st.success(
-            "✓ VVP available"
-        )
-
-    else:
-
-        st.warning(
-            "⚠ VVP unavailable"
-        )
-
-    # -------------------------------------------------------------------------
-    # LLM status
-    # -------------------------------------------------------------------------
-
-    st.subheader(
-        "AI Engine"
-    )
-
-    if GROQ_API_KEY:
-
-        st.success(
-            "✓ Groq API configured"
-        )
-
-        st.caption(
-            f"Model: {GROQ_MODEL}"
-        )
-
-    else:
-
-        st.warning(
-            "Groq API key not configured."
-        )
-
-        st.caption(
-            "The platform can still run deterministic stages "
-            "when supported by the installed agents."
-        )
-
-    # -------------------------------------------------------------------------
-    # Configuration
-    # -------------------------------------------------------------------------
-
-    st.divider()
 
     if st.button(
-        "🔧 Show Configuration",
+        "🔌 Test Groq Connection",
         use_container_width=True,
     ):
 
-        st.json(
-            get_settings_summary()
-        )
+        with st.spinner(
+            "Testing Groq..."
+        ):
+
+            diagnostic = (
+                check_llm_available()
+            )
+
+        if diagnostic.get(
+            "available"
+        ):
+            st.success(
+                "Groq connection successful."
+            )
+
+            st.json(
+                safe_json(
+                    diagnostic
+                )
+            )
+
+        else:
+            st.error(
+                diagnostic.get(
+                    "error",
+                    "Groq unavailable.",
+                )
+            )
+
+    if st.button(
+        "🔄 Clear Current Run",
+        use_container_width=True,
+    ):
+
+        for key in [
+            "verification_state",
+            "verification_run",
+            "last_run_id",
+        ]:
+
+            st.session_state.pop(
+                key,
+                None,
+            )
+
+        st.rerun()
 
 
-# =============================================================================
-# INPUT SECTION
-# =============================================================================
+# ============================================================================
+# Input section
+# ============================================================================
 
 st.header(
     "1️⃣ Verification Input"
 )
 
-input_left, input_right = st.columns(
-    2
+
+# ---------------------------------------------------------------------------
+# Sample selector
+# ---------------------------------------------------------------------------
+
+sample_projects = (
+    discover_sample_projects()
+)
+
+sample_options = [
+    "Custom RTL"
+] + [
+    name
+    for name in sample_projects
+]
+
+selected_sample = st.selectbox(
+    "Verification Project",
+    options=sample_options,
+    index=0,
 )
 
 
-with input_left:
+if (
+    selected_sample != "Custom RTL"
+):
 
-    project_name = st.text_input(
-        "Project Name",
-        value=st.session_state.project_name,
+    if st.button(
+        "📥 Load Sample Project",
+        use_container_width=False,
+    ):
+
+        try:
+
+            sample = (
+                load_sample_project(
+                    selected_sample
+                )
+            )
+
+            st.session_state[
+                "sample_project_data"
+            ] = sample
+
+            st.success(
+                f"Loaded sample: {selected_sample}"
+            )
+
+        except Exception as exc:
+
+            st.error(
+                f"Unable to load sample: {exc}"
+            )
+
+
+sample_data = st.session_state.get(
+    "sample_project_data",
+    {},
+)
+
+if (
+    selected_sample != "Custom RTL"
+    and sample_data.get(
+        "project_name"
+    ) != selected_sample
+):
+
+    sample_data = {}
+
+
+default_project_name = (
+    sample_data.get(
+        "project_name"
     )
-
-    specification = st.text_area(
-        "Functional Specification",
-        value=st.session_state.specification,
-        height=360,
-        max_chars=MAX_SPEC_CHARS,
-        placeholder=(
-            "Describe the expected behavior of the RTL..."
-        ),
+    or (
+        "rtl_verification_project"
+        if selected_sample == "Custom RTL"
+        else selected_sample
     )
+)
 
-
-with input_right:
-
-    rtl_code = st.text_area(
-        "RTL / Verilog Code",
-        value=st.session_state.rtl_code,
-        height=360,
-        max_chars=MAX_RTL_CHARS,
-        placeholder=(
-            "Paste Verilog/SystemVerilog RTL here..."
-        ),
+default_spec = (
+    sample_data.get(
+        "specification"
     )
+    or (
+        DEFAULT_SPECIFICATION
+        if selected_sample == "Custom RTL"
+        else ""
+    )
+)
+
+default_rtl = (
+    sample_data.get(
+        "rtl_code"
+    )
+    or (
+        DEFAULT_RTL
+        if selected_sample == "Custom RTL"
+        else ""
+    )
+)
+
+default_reference_tb = (
+    sample_data.get(
+        "reference_testbench"
+    )
+    or (
+        DEFAULT_TESTBENCH
+        if selected_sample == "Custom RTL"
+        else ""
+    )
+)
+
+default_vectors = sample_data.get(
+    "reference_test_vectors",
+    [],
+)
 
 
-# =============================================================================
-# REFERENCE TESTBENCH
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Project name
+# ---------------------------------------------------------------------------
+
+project_name = st.text_input(
+    "Project Name",
+    value=default_project_name,
+)
+
+
+# ---------------------------------------------------------------------------
+# Specification
+# ---------------------------------------------------------------------------
+
+specification = st.text_area(
+    "Functional Specification",
+    value=default_spec,
+    height=260,
+    max_chars=MAX_SPEC_CHARS,
+    placeholder=(
+        "Describe the required RTL behavior..."
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# RTL
+# ---------------------------------------------------------------------------
+
+rtl_code = st.text_area(
+    "RTL / Verilog Code",
+    value=default_rtl,
+    height=420,
+    max_chars=MAX_RTL_CHARS,
+    placeholder=(
+        "Paste your Verilog/SystemVerilog RTL here..."
+    ),
+)
+
+
+# ============================================================================
+# Reference assets
+# ============================================================================
 
 st.header(
     "2️⃣ Reference Verification Assets"
 )
 
-with st.expander(
-    "Reference Testbench and Test Vectors",
-    expanded=False,
-):
+reference_testbench = st.text_area(
+    "Reference Testbench",
+    value=default_reference_tb,
+    height=300,
+    placeholder=(
+        "Optional reference Verilog/SystemVerilog testbench..."
+    ),
+)
 
-    reference_left, reference_right = st.columns(
-        2
+vectors_default_text = ""
+
+if default_vectors:
+
+    try:
+        vectors_default_text = json.dumps(
+            default_vectors,
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    except Exception:
+        vectors_default_text = str(
+            default_vectors
+        )
+
+reference_vectors_text = st.text_area(
+    "Reference Test Vectors (JSON)",
+    value=vectors_default_text,
+    height=180,
+    placeholder=(
+        '[{"name": "reset", "inputs": {...}}]'
+    ),
+)
+
+
+# ============================================================================
+# Input summary
+# ============================================================================
+
+st.subheader(
+    "Input Summary"
+)
+
+summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(
+    4
+)
+
+with summary_col1:
+    st.metric(
+        "Specification",
+        f"{len(specification):,} chars",
     )
 
-    with reference_left:
+with summary_col2:
+    st.metric(
+        "RTL",
+        f"{len(rtl_code):,} chars",
+    )
 
-        reference_testbench = st.text_area(
-            "Reference Testbench",
-            value=st.session_state.reference_testbench,
-            height=280,
-            placeholder=(
-                "Optional reference testbench..."
-            ),
-        )
+with summary_col3:
+    st.metric(
+        "Reference TB",
+        f"{len(reference_testbench):,} chars",
+    )
 
-    with reference_right:
+with summary_col4:
 
-        reference_vectors_default = json.dumps(
-            st.session_state.reference_test_vectors,
-            indent=2,
-        )
+    try:
 
-        reference_vectors_text = st.text_area(
-            "Reference Test Vectors JSON",
-            value=reference_vectors_default,
-            height=280,
-            placeholder=(
-                '[{"name": "reset", "expected": "..."}]'
-            ),
-        )
-
-        try:
-
-            reference_test_vectors = json.loads(
+        parsed_vectors_preview = (
+            json.loads(
                 reference_vectors_text
             )
+            if reference_vectors_text.strip()
+            else []
+        )
 
-            if not isinstance(
-                reference_test_vectors,
-                list,
-            ):
-
-                reference_test_vectors = [
-                    reference_test_vectors
-                ]
-
-        except Exception:
-
-            reference_test_vectors = []
-
-            st.warning(
-                "Reference test vectors JSON is invalid."
+        vector_count = (
+            len(
+                parsed_vectors_preview
             )
+            if isinstance(
+                parsed_vectors_preview,
+                list,
+            )
+            else 1
+        )
 
+    except Exception:
+        vector_count = 0
 
-# =============================================================================
-# INPUT SUMMARY
-# =============================================================================
-
-with st.expander(
-    "Input Summary"
-):
-
-    summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(
-        4
+    st.metric(
+        "Test Vectors",
+        vector_count,
     )
 
-    with summary_col1:
 
-        st.metric(
-            "Specification",
-            f"{len(specification):,} chars",
+# ============================================================================
+# Validation
+# ============================================================================
+
+input_errors: list[str] = []
+
+if not project_name.strip():
+    input_errors.append(
+        "Project Name is required."
+    )
+
+if not specification.strip():
+    input_errors.append(
+        "Functional Specification is empty."
+    )
+
+if not rtl_code.strip():
+    input_errors.append(
+        "RTL / Verilog Code is empty."
+    )
+
+if (
+    len(rtl_code)
+    > MAX_RTL_CHARS
+):
+    input_errors.append(
+        "RTL exceeds the configured size limit."
+    )
+
+if (
+    len(specification)
+    > MAX_SPEC_CHARS
+):
+    input_errors.append(
+        "Specification exceeds the configured size limit."
+    )
+
+
+reference_test_vectors: Any = []
+
+if reference_vectors_text.strip():
+
+    try:
+
+        reference_test_vectors = json.loads(
+            reference_vectors_text
         )
 
-    with summary_col2:
+    except json.JSONDecodeError as exc:
 
-        st.metric(
-            "RTL",
-            f"{len(rtl_code):,} chars",
-        )
-
-    with summary_col3:
-
-        st.metric(
-            "Reference TB",
-            f"{len(reference_testbench):,} chars",
-        )
-
-    with summary_col4:
-
-        st.metric(
-            "Reference Vectors",
-            count_items(
-                reference_test_vectors
-            ),
+        input_errors.append(
+            "Reference Test Vectors contain invalid JSON: "
+            + str(exc)
         )
 
 
-# =============================================================================
-# START VERIFICATION
-# =============================================================================
+if input_errors:
+
+    for error in input_errors:
+        st.warning(
+            f"⚠️ {error}"
+        )
+
+
+# ============================================================================
+# Run button
+# ============================================================================
 
 st.header(
     "3️⃣ Agentic Verification"
 )
 
-start_verification = st.button(
-    "🚀 START FULL VERIFICATION",
+run_button = st.button(
+    "🚀 Run Autonomous Verification",
     type="primary",
     use_container_width=True,
+    disabled=bool(
+        input_errors
+    ),
 )
 
 
-if start_verification:
+# ============================================================================
+# Execute verification
+# ============================================================================
 
-    # -------------------------------------------------------------------------
-    # Save current input to session.
-    # -------------------------------------------------------------------------
+if run_button:
 
-    st.session_state.project_name = (
-        project_name
-    )
-
-    st.session_state.specification = (
-        specification
-    )
-
-    st.session_state.rtl_code = (
-        rtl_code
-    )
-
-    st.session_state.reference_testbench = (
-        reference_testbench
-    )
-
-    st.session_state.reference_test_vectors = (
-        reference_test_vectors
-    )
-
-    st.session_state.verification_started = True
-
-    # -------------------------------------------------------------------------
-    # Validate inputs.
-    # -------------------------------------------------------------------------
-
-    if not specification.strip():
-
-        st.error(
-            "❌ Functional specification is required."
-        )
-
-        st.stop()
-
-    if not rtl_code.strip():
-
-        st.error(
-            "❌ RTL / Verilog code is required."
-        )
-
-        st.stop()
-
-    # -------------------------------------------------------------------------
-    # Metadata
-    # -------------------------------------------------------------------------
-
-    run_metadata = {
-        "source": "streamlit",
-        "project_name": project_name,
-        "rtl_chars": len(rtl_code),
-        "specification_chars": len(
-            specification
-        ),
-        "reference_testbench": bool(
-            reference_testbench.strip()
-        ),
-        "reference_test_vectors": count_items(
-            reference_test_vectors
-        ),
-    }
-
-    # -------------------------------------------------------------------------
-    # Run workflow.
-    # -------------------------------------------------------------------------
-
-    progress_placeholder = st.empty()
+    verification_run = None
+    state: VerificationState | None = None
 
     try:
 
+        # ------------------------------------------------------------------
+        # Create one run + one shared logger
+        # ------------------------------------------------------------------
+
         with st.status(
-            "🚀 Starting Agentic RTL Verification...",
+            "Creating verification run and shared logger...",
             expanded=True,
-        ) as verification_status:
+        ):
 
-            progress_placeholder.info(
-                "Creating one verification run and shared logger..."
-            )
-
-            verification_status.write(
-                "✓ VerificationRun created"
-            )
-
-            verification_status.write(
-                "✓ Shared ActivityLogger initialized"
-            )
-
-            verification_status.write(
-                "→ RTL Analyzer"
-            )
-
-            state = run_workflow(
-                specification=specification,
-                rtl_code=rtl_code,
-                project_name=project_name,
-                reference_testbench=reference_testbench,
-                reference_test_vectors=reference_test_vectors,
-                max_iterations=int(
-                    max_iterations
-                ),
-                run_mutation=bool(
-                    run_mutation
-                ),
-                run_formal=bool(
-                    run_formal
-                ),
-                run_red_team=bool(
-                    run_red_team
-                ),
-                metadata=run_metadata,
-            )
-
-            # ---------------------------------------------------------------
-            # Store results.
-            # ---------------------------------------------------------------
-
-            st.session_state.last_state = (
-                state
-            )
-
-            st.session_state.last_run_id = (
-                state.get(
-                    "run_id"
+            verification_run, state = (
+                prepare_run(
+                    project_name=project_name.strip(),
+                    specification=specification,
+                    rtl_code=rtl_code,
+                    reference_testbench=reference_testbench,
+                    reference_test_vectors=reference_test_vectors,
+                    max_iterations=max_iterations_ui,
+                    run_mutation=enable_mutation_ui,
+                    run_formal=enable_formal_ui,
+                    run_red_team=enable_red_team_ui,
                 )
             )
 
-            verification_status.write(
-                "✓ Verification workflow completed"
+            st.write(
+                f"Run ID: `{verification_run.run_id}`"
             )
 
-            verification_status.update(
-                label="✅ Verification Completed",
-                state="complete",
+            st.write(
+                f"Run directory: `{verification_run.run_dir}`"
             )
 
-        progress_placeholder.empty()
+        # ------------------------------------------------------------------
+        # Execute
+        # ------------------------------------------------------------------
+
+        with st.spinner(
+            "Running autonomous verification pipeline..."
+        ):
+
+            final_state = execute_workflow(
+                verification_run=verification_run,
+                state=state,
+            )
+
+        # ------------------------------------------------------------------
+        # Finalize
+        # ------------------------------------------------------------------
+
+        final_state = finalize_run(
+            verification_run,
+            final_state,
+        )
+
+        st.session_state[
+            "verification_state"
+        ] = final_state
+
+        st.session_state[
+            "verification_run"
+        ] = verification_run
+
+        st.session_state[
+            "last_run_id"
+        ] = verification_run.run_id
+
+        st.success(
+            "✅ Verification Completed"
+        )
 
     except Exception as exc:
 
-        verification_status.update(
-            label="❌ Verification Failed",
-            state="error",
-        )
+        st.session_state[
+            "verification_state"
+        ] = state
+
+        st.session_state[
+            "verification_run"
+        ] = verification_run
 
         st.error(
-            "Verification workflow failed."
+            "❌ Verification Failed"
         )
 
-        st.exception(
-            exc
+        st.markdown(
+            f"""
+**Verification workflow failed.**
+
+**{type(exc).__name__}:** {exc}
+"""
         )
 
-        st.stop()
+        with st.expander(
+            "Traceback",
+            expanded=False,
+        ):
+
+            st.code(
+                traceback.format_exc(),
+                language="text",
+            )
+
+        if (
+            verification_run is not None
+            and state is not None
+        ):
+
+            try:
+
+                finalize_verification_run(
+                    verification_run,
+                    state=state,
+                    status="FAILED",
+                    final_verdict="FAILED",
+                )
+
+            except Exception:
+                pass
 
 
-# =============================================================================
-# RESULT STATE
-# =============================================================================
+# ============================================================================
+# Retrieve last result
+# ============================================================================
 
-state = st.session_state.last_state
+current_state = st.session_state.get(
+    "verification_state"
+)
+
+current_run = st.session_state.get(
+    "verification_run"
+)
 
 
-if state is not None:
+# ============================================================================
+# Results
+# ============================================================================
 
-    # =========================================================================
-    # RESULTS HEADER
-    # =========================================================================
+if current_state:
 
-    st.divider()
+    current_state = ensure_state_defaults(
+        current_state
+    )
 
     st.header(
         "4️⃣ Verification Results"
     )
 
-    run_id = state.get(
-        "run_id",
-        "unknown",
-    )
+    # ------------------------------------------------------------------------
+    # Run information
+    # ------------------------------------------------------------------------
 
-    final_verdict = format_verdict(
-        state.get(
-            "final_verdict",
-            state.get(
-                "judge_verdict",
-                "NOT_RUN",
-            ),
+    run_id = (
+        current_state.get(
+            "run_id"
         )
-    )
-
-    verification_score = safe_float(
-        state.get(
-            "verification_score",
-            0.0,
+        or (
+            current_run.run_id
+            if current_run is not None
+            else ""
         )
+        or "unknown"
     )
 
-    coverage_score = safe_float(
-        state.get(
-            "coverage_score",
-            state.get(
-                "coverage",
-                {},
-            ).get(
-                "score",
-                0.0,
+    run_dir = (
+        current_state.get(
+            "run_dir"
+        )
+        or (
+            str(
+                current_run.run_dir
             )
-            if isinstance(
-                state.get(
-                    "coverage",
-                    {},
-                ),
-                dict,
-            )
-            else 0.0,
+            if current_run is not None
+            else ""
         )
     )
 
-    mutation_score = safe_float(
-        state.get(
-            "mutation_score",
-            state.get(
-                "mutation_results",
-                {},
-            ).get(
-                "score",
-                0.0,
-            )
-            if isinstance(
-                state.get(
-                    "mutation_results",
-                    {},
-                ),
-                dict,
-            )
-            else 0.0,
-        )
-    )
-
-    confidence = safe_float(
-        state.get(
-            "confidence",
-            0.0,
-        )
-    )
-
-    # =========================================================================
-    # RUN IDENTIFICATION
-    # =========================================================================
-
-    st.info(
+    st.markdown(
         f"**Verification Run:** `{run_id}`"
     )
 
-    run_dir = get_run_directory_from_state(
-        state
-    )
-
     if run_dir:
-
         st.caption(
             f"Artifacts: `{run_dir}`"
         )
 
-    # =========================================================================
-    # TOP METRICS
-    # =========================================================================
+    # ------------------------------------------------------------------------
+    # Judge values
+    # ------------------------------------------------------------------------
+
+    judge = current_state.get(
+        "verification_judge",
+        {},
+    )
+
+    coverage = current_state.get(
+        "coverage",
+        {},
+    )
+
+    mutation = current_state.get(
+        "mutation",
+        {},
+    )
+
+    simulation = current_state.get(
+        "simulation",
+        {},
+    )
+
+    formal = current_state.get(
+        "formal",
+        {},
+    )
+
+    final_verdict = (
+        current_state.get(
+            "final_verdict"
+        )
+        or judge.get(
+            "verdict",
+            "NEED_MORE",
+        )
+    )
+
+    verification_score = (
+        current_state.get(
+            "verification_score"
+        )
+
+        if current_state.get(
+            "verification_score"
+        ) is not None
+
+        else judge.get(
+            "verification_score",
+            0,
+        )
+    )
+
+    confidence = (
+        current_state.get(
+            "confidence"
+        )
+
+        if current_state.get(
+            "confidence"
+        ) is not None
+
+        else judge.get(
+            "confidence",
+            0,
+        )
+    )
+
+    coverage_score = coverage.get(
+        "score",
+        0,
+    )
+
+    mutation_score = mutation.get(
+        "score"
+    )
+
+    # ------------------------------------------------------------------------
+    # Metrics
+    # ------------------------------------------------------------------------
 
     metric1, metric2, metric3, metric4, metric5 = st.columns(
         5
@@ -1195,70 +1589,137 @@ if state is not None:
 
         st.metric(
             "Final Verdict",
-            final_verdict,
+            str(
+                final_verdict
+            ),
         )
 
     with metric2:
 
         st.metric(
             "Verification Score",
-            f"{verification_score:.1f}%",
+            percent_text(
+                verification_score
+            ),
         )
 
     with metric3:
 
         st.metric(
             "Coverage",
-            f"{coverage_score:.1f}%",
+            percent_text(
+                coverage_score
+            ),
         )
 
     with metric4:
 
+        if mutation_score is None:
+
+            mutation_display = "N/A"
+
+        else:
+
+            mutation_display = percent_text(
+                mutation_score
+            )
+
         st.metric(
             "Mutation",
-            f"{mutation_score:.1f}%",
+            mutation_display,
         )
 
     with metric5:
 
         st.metric(
             "Confidence",
-            f"{confidence:.1f}%",
+            percent_text(
+                confidence
+            ),
         )
 
-    # =========================================================================
-    # AGENT PIPELINE
-    # =========================================================================
+    # ------------------------------------------------------------------------
+    # Agent pipeline
+    # ------------------------------------------------------------------------
 
     st.subheader(
         "Agent Execution Pipeline"
     )
 
-    pipeline = [
-        ("🔍", "RTL Analyzer"),
-        ("📋", "Planner"),
-        ("🧪", "Test Generator"),
-        ("🧰", "Testbench"),
-        ("▶️", "Simulator"),
-        ("💥", "Failure Analyzer"),
-        ("📈", "Coverage"),
-        ("🛡️", "Red Team"),
-        ("🧬", "Mutation"),
-        ("🔬", "Formal"),
-        ("⚖️", "Judge"),
+    agent_pipeline = [
+        (
+            "🔍",
+            "RTL Analyzer",
+            "rtl_analysis",
+        ),
+        (
+            "📋",
+            "Planner",
+            "verification_plan",
+        ),
+        (
+            "🧪",
+            "Test Generator",
+            "generated_tests",
+        ),
+        (
+            "🧰",
+            "Testbench",
+            "generated_testbench",
+        ),
+        (
+            "▶️",
+            "Simulator",
+            "simulation",
+        ),
+        (
+            "💥",
+            "Failure Analyzer",
+            "failure_analysis",
+        ),
+        (
+            "📈",
+            "Coverage",
+            "coverage",
+        ),
+        (
+            "🛡️",
+            "Red Team",
+            "red_team",
+        ),
+        (
+            "🧬",
+            "Mutation",
+            "mutation",
+        ),
+        (
+            "🔬",
+            "Formal",
+            "formal",
+        ),
+        (
+            "⚖️",
+            "Judge",
+            "verification_judge",
+        ),
     ]
 
     pipeline_columns = st.columns(
-        len(pipeline)
+        len(agent_pipeline)
     )
 
     for column, (
         icon,
-        name,
+        label,
+        state_key,
     ) in zip(
         pipeline_columns,
-        pipeline,
+        agent_pipeline,
     ):
+
+        result = current_state.get(
+            state_key
+        )
 
         with column:
 
@@ -1267,833 +1728,1047 @@ if state is not None:
             )
 
             st.caption(
-                name
+                label
             )
 
-            st.success(
-                "Completed"
-            )
-
-    # =========================================================================
-    # RTL ANALYSIS
-    # =========================================================================
-
-    with st.expander(
-        "🔍 RTL Analysis",
-        expanded=True,
-    ):
-
-        analysis = state.get(
-            "rtl_analysis",
-            {},
-        )
-
-        if analysis:
-
-            render_json(
-                analysis
-            )
-
-        else:
-
-            st.info(
-                "No RTL analysis recorded."
-            )
-
-    # =========================================================================
-    # VERIFICATION PLAN
-    # =========================================================================
-
-    with st.expander(
-        "📋 Verification Plan"
-    ):
-
-        plan = state.get(
-            "verification_plan",
-            {},
-        )
-
-        render_json(
-            plan
-        )
-
-        scenarios = state.get(
-            "scenarios",
-            [],
-        )
-
-        if scenarios:
-
-            st.write(
-                f"**Scenarios:** {len(scenarios)}"
-            )
-
-            for index, scenario in enumerate(
-                scenarios,
-                start=1,
+            if (
+                state_key
+                == "generated_tests"
             ):
 
-                st.write(
-                    f"{index}. {scenario}"
+                if result:
+
+                    status = "Completed"
+
+                else:
+
+                    status = "No Evidence"
+
+            elif (
+                state_key
+                == "generated_testbench"
+            ):
+
+                status = (
+                    "Completed"
+                    if str(
+                        result or ""
+                    ).strip()
+                    else "No Evidence"
                 )
 
-    # =========================================================================
-    # GENERATED TESTS
-    # =========================================================================
+            else:
 
-    with st.expander(
-        "🧪 Generated Tests"
+                status = status_value(
+                    result
+                )
+
+            normalized_status = (
+                status.upper()
+            )
+
+            if normalized_status in {
+                "PASS",
+                "COMPLETED",
+                "DEGRADED",
+            }:
+
+                st.success(
+                    status
+                )
+
+            elif normalized_status in {
+                "FAILED",
+                "FAIL",
+            }:
+
+                st.error(
+                    status
+                )
+
+            elif normalized_status == "SKIPPED":
+
+                st.info(
+                    status
+                )
+
+            else:
+
+                st.warning(
+                    status
+                )
+
+    # ------------------------------------------------------------------------
+    # RTL Analysis
+    # ------------------------------------------------------------------------
+
+    st.subheader(
+        "🔍 RTL Analysis"
+    )
+
+    rtl_analysis = current_state.get(
+        "rtl_analysis",
+        {},
+    )
+
+    if result_exists(
+        rtl_analysis
     ):
 
-        tests = state.get(
-            "generated_tests",
-            [],
+        st.json(
+            safe_json(
+                rtl_analysis
+            )
         )
 
-        if not tests:
+    else:
 
-            tests = state.get(
-                "test_cases",
-                [],
-            )
+        st.warning(
+            "No RTL analysis evidence was produced."
+        )
 
-        if tests:
+    # ------------------------------------------------------------------------
+    # Verification plan
+    # ------------------------------------------------------------------------
 
-            st.write(
-                f"Generated test cases: **{len(tests)}**"
-            )
+    st.subheader(
+        "📋 Verification Plan"
+    )
 
-            render_json(
-                tests
-            )
+    plan = current_state.get(
+        "verification_plan",
+        {},
+    )
 
-        else:
-
-            st.info(
-                "No generated tests recorded."
-            )
-
-    # =========================================================================
-    # TESTBENCH
-    # =========================================================================
-
-    with st.expander(
-        "🧰 Generated Testbench"
+    if result_exists(
+        plan
     ):
 
-        generated_testbench = state.get(
+        st.json(
+            safe_json(
+                plan
+            )
+        )
+
+    else:
+
+        st.warning(
+            "No verification plan evidence was produced."
+        )
+
+    # ------------------------------------------------------------------------
+    # Generated tests
+    # ------------------------------------------------------------------------
+
+    st.subheader(
+        "🧪 Generated Tests"
+    )
+
+    generated_tests = current_state.get(
+        "generated_tests",
+        [],
+    )
+
+    if generated_tests:
+
+        st.write(
+            f"Generated {len(generated_tests)} test(s)."
+        )
+
+        for index, test in enumerate(
+            generated_tests,
+            start=1,
+        ):
+
+            if isinstance(
+                test,
+                dict,
+            ):
+
+                title = (
+                    test.get(
+                        "name"
+                    )
+                    or test.get(
+                        "id"
+                    )
+                    or f"Test {index}"
+                )
+
+            else:
+
+                title = f"Test {index}"
+
+            with st.expander(
+                str(title),
+                expanded=False,
+            ):
+
+                if isinstance(
+                    test,
+                    dict,
+                ):
+
+                    st.json(
+                        safe_json(
+                            test
+                        )
+                    )
+
+                else:
+
+                    st.code(
+                        str(test),
+                        language="text",
+                    )
+
+    else:
+
+        st.warning(
+            "No generated tests were produced."
+        )
+
+    # ------------------------------------------------------------------------
+    # Testbench
+    # ------------------------------------------------------------------------
+
+    st.subheader(
+        "🧰 Generated Testbench"
+    )
+
+    generated_testbench = (
+        current_state.get(
             "generated_testbench",
             "",
         )
+    )
 
-        if not generated_testbench:
+    if generated_testbench.strip():
 
-            generated_testbench = state.get(
-                "testbench_code",
-                "",
-            )
-
-        if generated_testbench:
-
-            render_code(
+        st.code(
+            truncate_text(
                 generated_testbench,
-                language="verilog",
-            )
+                40_000,
+            ),
+            language="verilog",
+        )
 
-        else:
+    else:
 
-            st.info(
-                "No generated testbench."
-            )
+        st.warning(
+            "No generated testbench was produced."
+        )
 
-    # =========================================================================
-    # SIMULATION
-    # =========================================================================
+    # ------------------------------------------------------------------------
+    # Simulation
+    # ------------------------------------------------------------------------
 
-    with st.expander(
+    st.subheader(
         "▶️ Simulation Results"
+    )
+
+    simulation = current_state.get(
+        "simulation",
+        {},
+    )
+
+    if result_exists(
+        simulation
     ):
 
-        simulation_result = state.get(
-            "simulation_result",
-            {},
+        sim_col1, sim_col2, sim_col3, sim_col4 = st.columns(
+            4
         )
 
-        render_json(
-            simulation_result
-        )
-
-        simulation_status = state.get(
-            "simulation_status",
-            "unknown",
-        )
-
-        simulation_passed = state.get(
-            "simulation_passed",
-            False,
-        )
-
-        st.write(
-            f"**Status:** `{simulation_status}`"
-        )
-
-        st.write(
-            f"**Passed:** `{simulation_passed}`"
-        )
-
-        return_code = state.get(
-            "simulation_return_code"
-        )
-
-        if return_code is not None:
-
-            st.write(
-                f"**Return Code:** `{return_code}`"
+        with sim_col1:
+            st.metric(
+                "Status",
+                simulation.get(
+                    "status",
+                    "UNKNOWN",
+                ),
             )
 
-        stdout = state.get(
-            "simulation_stdout",
-            "",
+        with sim_col2:
+            st.metric(
+                "Compile",
+                simulation.get(
+                    "compile_status",
+                    "UNKNOWN",
+                ),
+            )
+
+        with sim_col3:
+            st.metric(
+                "Passed",
+                str(
+                    simulation.get(
+                        "tests_passed",
+                        0,
+                    )
+                ),
+            )
+
+        with sim_col4:
+            st.metric(
+                "Failed",
+                str(
+                    simulation.get(
+                        "tests_failed",
+                        0,
+                    )
+                ),
+            )
+
+        with st.expander(
+            "Simulation Details",
+            expanded=True,
+        ):
+
+            st.json(
+                safe_json(
+                    simulation
+                )
+            )
+
+        stdout = simulation.get(
+            "stdout",
+            ""
         )
 
-        stderr = state.get(
-            "simulation_stderr",
-            "",
+        stderr = simulation.get(
+            "stderr",
+            ""
         )
 
         if stdout:
 
-            st.subheader(
-                "Simulation STDOUT"
-            )
+            with st.expander(
+                "Simulation stdout"
+            ):
 
-            st.code(
-                stdout
-            )
+                st.code(
+                    truncate_text(
+                        stdout
+                    ),
+                    language="text",
+                )
 
         if stderr:
 
-            st.subheader(
-                "Simulation STDERR"
-            )
+            with st.expander(
+                "Simulation stderr"
+            ):
 
-            st.code(
-                stderr
-            )
+                st.code(
+                    truncate_text(
+                        stderr
+                    ),
+                    language="text",
+                )
 
-        waveform_file = state.get(
-            "waveform_file"
+    else:
+
+        st.warning(
+            "No simulation evidence was produced."
         )
 
-        if waveform_file:
+    # ------------------------------------------------------------------------
+    # Failure analysis
+    # ------------------------------------------------------------------------
 
-            st.write(
-                f"Waveform: `{waveform_file}`"
-            )
-
-    # =========================================================================
-    # FAILURE ANALYSIS
-    # =========================================================================
-
-    with st.expander(
+    st.subheader(
         "💥 Failure Analysis"
+    )
+
+    failure_analysis = current_state.get(
+        "failure_analysis",
+        {},
+    )
+
+    if result_exists(
+        failure_analysis
     ):
 
-        failure_analysis = state.get(
-            "failure_analysis",
-            {},
-        )
-
-        render_json(
-            failure_analysis
-        )
-
-        failures = state.get(
-            "failures",
-            [],
-        )
-
-        if failures:
-
-            st.warning(
-                f"Detected {len(failures)} failure(s)."
+        st.json(
+            safe_json(
+                failure_analysis
             )
-
-            render_json(
-                failures
-            )
-
-        root_causes = state.get(
-            "root_causes",
-            [],
         )
 
-        if root_causes:
+    else:
 
-            st.subheader(
-                "Root Causes"
-            )
+        st.info(
+            "No failure analysis was produced."
+        )
 
-            for root_cause in root_causes:
+    # ------------------------------------------------------------------------
+    # Coverage
+    # ------------------------------------------------------------------------
 
-                st.write(
-                    f"- {root_cause}"
-                )
-
-    # =========================================================================
-    # COVERAGE
-    # =========================================================================
-
-    with st.expander(
+    st.subheader(
         "📈 Coverage Analysis"
+    )
+
+    coverage = current_state.get(
+        "coverage",
+        {},
+    )
+
+    if result_exists(
+        coverage
     ):
 
-        coverage = state.get(
-            "coverage",
-            {},
+        coverage_col1, coverage_col2, coverage_col3 = st.columns(
+            3
         )
 
-        render_json(
-            coverage
-        )
+        with coverage_col1:
 
-        coverage_gaps = state.get(
-            "coverage_gaps",
-            [],
-        )
-
-        if coverage_gaps:
-
-            st.warning(
-                "Coverage gaps detected."
+            st.metric(
+                "Coverage Score",
+                percent_text(
+                    coverage.get(
+                        "score",
+                        0,
+                    )
+                ),
             )
 
-            for gap in coverage_gaps:
+        with coverage_col2:
 
-                st.write(
-                    f"- {gap}"
-                )
+            st.metric(
+                "Scenarios Covered",
+                str(
+                    coverage.get(
+                        "scenarios_covered",
+                        0,
+                    )
+                ),
+            )
 
-    # =========================================================================
-    # RED TEAM
-    # =========================================================================
+        with coverage_col3:
 
-    with st.expander(
+            st.metric(
+                "Scenarios Total",
+                str(
+                    coverage.get(
+                        "scenarios_total",
+                        0,
+                    )
+                ),
+            )
+
+        st.json(
+            safe_json(
+                coverage
+            )
+        )
+
+    else:
+
+        st.warning(
+            "No coverage evidence was produced."
+        )
+
+    # ------------------------------------------------------------------------
+    # Red Team
+    # ------------------------------------------------------------------------
+
+    st.subheader(
         "🛡️ Red-Team Verification"
+    )
+
+    red_team = current_state.get(
+        "red_team",
+        {},
+    )
+
+    if result_exists(
+        red_team
     ):
 
-        red_team = state.get(
-            "red_team_results",
-            {},
-        )
-
-        render_json(
-            red_team
-        )
-
-        security_risks = state.get(
-            "security_risks",
-            [],
-        )
-
-        if security_risks:
-
-            st.warning(
-                "Potential RTL risks identified:"
+        st.json(
+            safe_json(
+                red_team
             )
+        )
 
-            for risk in security_risks:
+    else:
 
-                st.write(
-                    f"- {risk}"
-                )
+        st.info(
+            "Red-Team verification was not executed or produced no evidence."
+        )
 
-    # =========================================================================
-    # MUTATION
-    # =========================================================================
+    # ------------------------------------------------------------------------
+    # Mutation
+    # ------------------------------------------------------------------------
 
-    with st.expander(
+    st.subheader(
         "🧬 Mutation Testing"
+    )
+
+    mutation = current_state.get(
+        "mutation",
+        {},
+    )
+
+    if result_exists(
+        mutation
     ):
 
-        mutation = state.get(
-            "mutation_results",
-            {},
+        mutation_col1, mutation_col2, mutation_col3 = st.columns(
+            3
         )
 
-        render_json(
-            mutation
-        )
+        with mutation_col1:
 
-        mutations = state.get(
-            "mutations",
-            [],
-        )
-
-        if mutations:
-
-            st.write(
-                f"Mutants generated: {len(mutations)}"
+            mutation_score_local = mutation.get(
+                "score"
             )
 
-        surviving = state.get(
-            "surviving_mutants",
-            [],
+            st.metric(
+                "Mutation Score",
+                (
+                    "N/A"
+                    if mutation_score_local is None
+                    else percent_text(
+                        mutation_score_local
+                    )
+                ),
+            )
+
+        with mutation_col2:
+
+            st.metric(
+                "Mutants",
+                str(
+                    mutation.get(
+                        "mutants_total",
+                        0,
+                    )
+                ),
+            )
+
+        with mutation_col3:
+
+            st.metric(
+                "Killed",
+                str(
+                    mutation.get(
+                        "mutants_killed",
+                        0,
+                    )
+                ),
+            )
+
+        st.json(
+            safe_json(
+                mutation
+            )
         )
 
-        if surviving:
+    else:
 
-            st.warning(
-                f"Surviving mutants: {len(surviving)}"
-            )
+        st.info(
+            "Mutation testing was not executed."
+        )
 
-            render_json(
-                surviving
-            )
+    # ------------------------------------------------------------------------
+    # Formal
+    # ------------------------------------------------------------------------
 
-    # =========================================================================
-    # FORMAL
-    # =========================================================================
-
-    with st.expander(
+    st.subheader(
         "🔬 Formal Verification"
+    )
+
+    formal = current_state.get(
+        "formal",
+        {},
+    )
+
+    if result_exists(
+        formal
     ):
 
-        formal_results = state.get(
-            "formal_results",
-            {},
-        )
-
-        formal_status = state.get(
-            "formal_status",
-            "unknown",
-        )
-
-        st.write(
-            f"**Status:** `{formal_status}`"
-        )
-
-        render_json(
-            formal_results
-        )
-
-        counterexamples = state.get(
-            "formal_counterexamples",
-            [],
-        )
-
-        if counterexamples:
-
-            st.warning(
-                "Formal counterexamples found."
+        st.json(
+            safe_json(
+                formal
             )
+        )
 
-            render_json(
-                counterexamples
-            )
+    else:
 
-    # =========================================================================
-    # JUDGE
-    # =========================================================================
+        st.info(
+            "Formal verification was not executed."
+        )
 
-    with st.expander(
-        "⚖️ Verification Judge",
-        expanded=True,
+    # ------------------------------------------------------------------------
+    # Judge
+    # ------------------------------------------------------------------------
+
+    st.subheader(
+        "⚖️ Verification Judge"
+    )
+
+    judge = current_state.get(
+        "verification_judge",
+        {},
+    )
+
+    if result_exists(
+        judge
     ):
 
-        judge_result = state.get(
-            "judge_result",
-            {},
+        st.json(
+            safe_json(
+                judge
+            )
         )
 
-        render_json(
-            judge_result
+    else:
+
+        st.warning(
+            "No verification judge evidence was produced."
         )
 
-        st.divider()
+    # ------------------------------------------------------------------------
+    # Repair
+    # ------------------------------------------------------------------------
 
-        st.subheader(
-            f"Final Verdict: {final_verdict}"
-        )
-
-        st.metric(
-            "Verification Score",
-            f"{verification_score:.1f}%",
-        )
-
-    # =========================================================================
-    # REPAIR
-    # =========================================================================
-
-    with st.expander(
+    st.subheader(
         "🔧 RTL Repair"
+    )
+
+    repair = current_state.get(
+        "repair",
+        {},
+    )
+
+    if result_exists(
+        repair
     ):
 
-        repair_result = state.get(
-            "repair_result",
-            {},
-        )
-
-        render_json(
-            repair_result
-        )
-
-        repaired_rtl = state.get(
-            "repaired_rtl",
-            "",
-        )
-
-        repair_applied = state.get(
-            "repair_applied",
-            False,
-        )
-
-        st.write(
-            f"**Repair Applied:** `{repair_applied}`"
-        )
-
-        if repaired_rtl:
-
-            st.subheader(
-                "Repaired RTL"
+        st.json(
+            safe_json(
+                repair
             )
+        )
 
-            render_code(
-                repaired_rtl,
-                language="verilog",
-            )
+    else:
 
-    # =========================================================================
-    # ERRORS
-    # =========================================================================
+        st.info(
+            "No RTL repair was attempted."
+        )
 
-    errors = state.get(
+    # ------------------------------------------------------------------------
+    # Errors
+    # ------------------------------------------------------------------------
+
+    errors = current_state.get(
         "errors",
+        [],
+    )
+
+    warnings = current_state.get(
+        "warnings",
         [],
     )
 
     if errors:
 
-        with st.expander(
-            f"❌ Workflow Errors ({len(errors)})",
-            expanded=True,
-        ):
+        st.subheader(
+            "❌ Verification Errors"
+        )
 
-            for error in errors:
+        for error in errors:
 
-                st.error(
-                    str(error)
-                )
-
-    # =========================================================================
-    # WARNINGS
-    # =========================================================================
-
-    warnings = state.get(
-        "warnings",
-        [],
-    )
+            st.error(
+                str(error)
+            )
 
     if warnings:
 
-        with st.expander(
-            f"⚠️ Workflow Warnings ({len(warnings)})"
+        st.subheader(
+            "⚠️ Verification Warnings"
+        )
+
+        for warning in warnings:
+
+            st.warning(
+                str(warning)
+            )
+
+    # ------------------------------------------------------------------------
+    # Agent history
+    # ------------------------------------------------------------------------
+
+    agent_history = current_state.get(
+        "agent_history",
+        [],
+    )
+
+    if agent_history:
+
+        st.subheader(
+            "🕒 Agent Activity History"
+        )
+
+        for event in reversed(
+            agent_history
         ):
 
-            for warning in warnings:
+            timestamp = event.get(
+                "timestamp",
+                "",
+            )
 
-                st.warning(
-                    str(warning)
+            agent = event.get(
+                "agent",
+                "",
+            )
+
+            status = event.get(
+                "status",
+                "",
+            )
+
+            message = event.get(
+                "message",
+                "",
+            )
+
+            st.markdown(
+                f"**{timestamp}** — "
+                f"`{agent}` — "
+                f"**{status}**"
+                + (
+                    f" — {message}"
+                    if message
+                    else ""
                 )
+            )
 
     # =========================================================================
-    # ARTIFACTS
+    # Final verdict
     # =========================================================================
+
+    st.divider()
+
+    st.subheader(
+        f"### Final Verdict: {final_verdict}"
+    )
+
+    final_col1, final_col2 = st.columns(
+        2
+    )
+
+    with final_col1:
+
+        st.metric(
+            "Verification Score",
+            percent_text(
+                verification_score
+            ),
+        )
+
+    with final_col2:
+
+        st.metric(
+            "Confidence",
+            percent_text(
+                confidence
+            ),
+        )
+
+
+# ============================================================================
+# Artifacts
+# ============================================================================
+
+if current_state:
 
     st.header(
         "5️⃣ Run Artifacts & Observability"
     )
 
-    artifact_tab, activity_tab, workflow_tab, manifest_tab = st.tabs(
-        [
-            "📦 Artifacts",
-            "📊 Agent Activity",
-            "📜 Workflow Log",
-            "🧾 Manifests",
-        ]
+    run_dir_text = (
+        current_state.get(
+            "run_dir",
+            "",
+        )
     )
 
-    # -------------------------------------------------------------------------
-    # ARTIFACT TAB
-    # -------------------------------------------------------------------------
+    if not run_dir_text:
 
-    with artifact_tab:
+        st.warning(
+            "Run artifact directory is not available."
+        )
 
-        if run_dir is None:
+    else:
 
-            st.info(
-                "Run artifact directory is not available."
+        run_path = Path(
+            run_dir_text
+        )
+
+        if not run_path.exists():
+
+            st.warning(
+                "Run artifact directory does not exist."
             )
 
         else:
 
-            st.code(
-                str(run_dir)
-            )
+            # ----------------------------------------------------------------
+            # File discovery
+            # ----------------------------------------------------------------
 
-            artifact_manifest = load_manifest(
-                run_dir,
-                "artifact_manifest.json",
-            )
+            files = []
 
-            artifacts = artifact_manifest.get(
-                "artifacts",
-                [],
-            )
+            try:
 
-            if artifacts:
+                files = [
+                    path
+                    for path in run_path.rglob("*")
+                    if path.is_file()
+                ]
 
-                st.write(
-                    f"**Registered artifacts:** {len(artifacts)}"
-                )
-
-                for artifact in artifacts:
-
-                    relative_path = artifact.get(
-                        "path",
-                        "",
-                    )
-
-                    artifact_type = artifact.get(
-                        "artifact_type",
-                        "file",
-                    )
-
-                    size = artifact.get(
-                        "size_bytes",
-                        0,
-                    )
-
-                    sha256 = artifact.get(
-                        "sha256"
-                    )
-
-                    st.markdown(
-                        f"**{relative_path}**  \n"
-                        f"Type: `{artifact_type}` • "
-                        f"Size: `{size}` bytes"
-                    )
-
-                    if sha256:
-
-                        st.caption(
-                            f"SHA-256: `{sha256}`"
-                        )
-
-            else:
-
-                st.info(
-                    "No registered artifacts."
-                )
-
-    # -------------------------------------------------------------------------
-    # ACTIVITY TAB
-    # -------------------------------------------------------------------------
-
-    with activity_tab:
-
-        activity_log = read_activity_log(
-            run_dir
-        )
-
-        if activity_log:
-
-            st.code(
-                activity_log,
-                language="json",
-            )
-
-        else:
-
-            st.info(
-                "No agent activity log available."
-            )
-
-    # -------------------------------------------------------------------------
-    # WORKFLOW LOG TAB
-    # -------------------------------------------------------------------------
-
-    with workflow_tab:
-
-        workflow_log = read_workflow_log(
-            run_dir
-        )
-
-        if workflow_log:
-
-            st.code(
-                workflow_log
-            )
-
-        else:
-
-            st.info(
-                "No workflow log available."
-            )
-
-    # -------------------------------------------------------------------------
-    # MANIFEST TAB
-    # -------------------------------------------------------------------------
-
-    with manifest_tab:
-
-        run_manifest = load_manifest(
-            run_dir,
-            "run_manifest.json",
-        )
-
-        artifact_manifest = load_manifest(
-            run_dir,
-            "artifact_manifest.json",
-        )
-
-        st.subheader(
-            "Run Manifest"
-        )
-
-        render_json(
-            run_manifest
-        )
-
-        st.subheader(
-            "Artifact Manifest"
-        )
-
-        render_json(
-            artifact_manifest
-        )
-
-
-# =============================================================================
-# NO RESULTS STATE
-# =============================================================================
-
-else:
-
-    st.divider()
-
-    st.info(
-        """
-        **No verification run yet.**
-
-        Load one of the sample projects or enter your own:
-
-        1. Functional specification
-        2. RTL / Verilog
-        3. Optional reference testbench
-        4. Optional reference vectors
-
-        Then click **START FULL VERIFICATION**.
-        """
-    )
-
-    # -------------------------------------------------------------------------
-    # Sample project cards
-    # -------------------------------------------------------------------------
-
-    if sample_projects:
-
-        st.header(
-            "📚 Available Sample Projects"
-        )
-
-        sample_columns = st.columns(
-            min(
-                3,
-                len(sample_projects),
-            )
-        )
-
-        for index, (
-            name,
-            directory,
-        ) in enumerate(
-            sample_projects.items()
-        ):
-
-            column = sample_columns[
-                index
-                % len(sample_columns)
-            ]
-
-            with column:
-
-                st.subheader(
-                    name.replace(
-                        "_",
-                        " ",
-                    ).title()
-                )
-
-                readme = safe_read_text(
-                    directory
-                    / "README.md"
-                )
-
-                if readme:
-
-                    # Keep the card concise.
-                    preview = readme[:600]
-
-                    st.caption(
-                        preview
-                    )
-
+            except Exception:
                 files = []
 
-                for filename in [
-                    "spec.md",
-                    "rtl.v",
-                    "testbench.v",
-                    "test_vectors.json",
-                ]:
+            artifact_count = len(
+                files
+            )
 
-                    if (
-                        directory
-                        / filename
-                    ).exists():
+            st.metric(
+                "Artifact Files",
+                artifact_count,
+            )
 
-                        files.append(
-                            filename
+            # ----------------------------------------------------------------
+            # Artifact manifest
+            # ----------------------------------------------------------------
+
+            artifact_manifest = (
+                run_path
+                / "artifact_manifest.json"
+            )
+
+            if artifact_manifest.exists():
+
+                with st.expander(
+                    "📦 Artifact Manifest",
+                    expanded=False,
+                ):
+
+                    try:
+
+                        manifest_data = json.loads(
+                            artifact_manifest.read_text(
+                                encoding="utf-8"
+                            )
                         )
 
-                if files:
+                        st.json(
+                            safe_json(
+                                manifest_data
+                            )
+                        )
 
-                    st.write(
-                        "Files: "
-                        + ", ".join(files)
+                    except Exception as exc:
+
+                        st.error(
+                            f"Unable to read manifest: {exc}"
+                        )
+
+            # ----------------------------------------------------------------
+            # Agent activity
+            # ----------------------------------------------------------------
+
+            activity_file = (
+                run_path
+                / "agent_activity.jsonl"
+            )
+
+            if activity_file.exists():
+
+                with st.expander(
+                    "📊 Agent Activity",
+                    expanded=False,
+                ):
+
+                    try:
+
+                        activity_lines = (
+                            activity_file
+                            .read_text(
+                                encoding="utf-8"
+                            )
+                            .splitlines()
+                        )
+
+                        st.write(
+                            f"{len(activity_lines)} activity events"
+                        )
+
+                        st.code(
+                            truncate_text(
+                                "\n".join(
+                                    activity_lines
+                                ),
+                                30_000,
+                            ),
+                            language="json",
+                        )
+
+                    except Exception as exc:
+
+                        st.error(
+                            f"Unable to read activity log: {exc}"
+                        )
+
+            # ----------------------------------------------------------------
+            # Workflow log
+            # ----------------------------------------------------------------
+
+            workflow_log = (
+                run_path
+                / "workflow.log"
+            )
+
+            if workflow_log.exists():
+
+                with st.expander(
+                    "📜 Workflow Log",
+                    expanded=False,
+                ):
+
+                    try:
+
+                        log_text = (
+                            workflow_log
+                            .read_text(
+                                encoding="utf-8"
+                            )
+                        )
+
+                        st.code(
+                            truncate_text(
+                                log_text,
+                                40_000,
+                            ),
+                            language="text",
+                        )
+
+                    except Exception as exc:
+
+                        st.error(
+                            f"Unable to read workflow log: {exc}"
+                        )
+
+            # ----------------------------------------------------------------
+            # Run manifest
+            # ----------------------------------------------------------------
+
+            run_manifest = (
+                run_path
+                / "run_manifest.json"
+            )
+
+            if run_manifest.exists():
+
+                with st.expander(
+                    "🧾 Run Manifest",
+                    expanded=False,
+                ):
+
+                    try:
+
+                        manifest_text = (
+                            run_manifest
+                            .read_text(
+                                encoding="utf-8"
+                            )
+                        )
+
+                        st.code(
+                            truncate_text(
+                                manifest_text,
+                                30_000,
+                            ),
+                            language="json",
+                        )
+
+                    except Exception as exc:
+
+                        st.error(
+                            f"Unable to read run manifest: {exc}"
+                        )
+
+            # ----------------------------------------------------------------
+            # All artifact files
+            # ----------------------------------------------------------------
+
+            with st.expander(
+                "📁 All Run Files",
+                expanded=False,
+            ):
+
+                if not files:
+
+                    st.info(
+                        "No files were generated."
                     )
 
+                else:
 
-# =============================================================================
-# FOOTER
-# =============================================================================
+                    for path in sorted(
+                        files
+                    ):
+
+                        try:
+
+                            relative = path.relative_to(
+                                run_path
+                            )
+
+                        except ValueError:
+
+                            relative = path.name
+
+                        st.code(
+                            str(relative)
+                        )
+
+
+# ============================================================================
+# Settings diagnostics
+# ============================================================================
+
+with st.expander(
+    "🔧 Application Configuration",
+    expanded=False,
+):
+
+    settings_summary = (
+        get_settings_summary()
+    )
+
+    st.json(
+        safe_json(
+            settings_summary
+        )
+    )
+
+
+# ============================================================================
+# Footer
+# ============================================================================
 
 st.divider()
 
-footer_left, footer_right = st.columns(
-    2
+st.caption(
+    "PragyanAI SiliconAI • Agentic RTL Verification • "
+    "AI Test Generation • Simulation • Coverage"
 )
 
-with footer_left:
-
-    st.caption(
-        f"{APP_NAME} • v{APP_VERSION}"
-    )
-
-with footer_right:
-
-    st.caption(
-        "Agentic RTL Verification • AI Test Generation • Simulation • Coverage"
-    )
-    
