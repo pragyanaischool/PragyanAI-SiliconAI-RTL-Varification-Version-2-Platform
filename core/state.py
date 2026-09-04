@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, TypedDict
 
 
@@ -69,6 +70,7 @@ AGENT_NAMES = [
     "mutation",
     "formal",
     "verification_judge",
+    "repair",
 ]
 
 
@@ -370,11 +372,19 @@ def create_initial_state(
     Every expected key exists from the beginning. This prevents downstream
     agents and the Streamlit UI from encountering missing keys.
     """
+    # Guarantee a valid run directory on disk
+    if not run_dir:
+        default_run_dir = Path("runtime/runs/default_run")
+        default_run_dir.mkdir(parents=True, exist_ok=True)
+        resolved_run_dir = str(default_run_dir)
+    else:
+        resolved_run_dir = str(run_dir)
+        Path(resolved_run_dir).mkdir(parents=True, exist_ok=True)
 
     state: VerificationState = {
         # Run
-        "run_id": run_id or "",
-        "run_dir": run_dir or "",
+        "run_id": run_id or "run_default_local",
+        "run_dir": resolved_run_dir,
         "started_at": utc_now(),
         "completed_at": "",
 
@@ -457,9 +467,6 @@ def ensure_state_defaults(
     """
     Normalize an existing state.
 
-    This function is useful when migrating from the older project where
-    some keys may not exist.
-
     Existing values are preserved.
     Missing values are filled with safe defaults.
     """
@@ -479,8 +486,6 @@ def ensure_state_defaults(
             )
             continue
 
-        # Do not allow None for structures that downstream code expects
-        # to be iterable.
         if normalized[key] is None:
 
             if isinstance(default_value, dict):
@@ -493,6 +498,14 @@ def ensure_state_defaults(
 
             elif isinstance(default_value, str):
                 normalized[key] = ""
+
+    # Ensure run_dir is valid and exists on disk
+    if not normalized.get("run_dir"):
+        default_run_dir = Path("runtime/runs/default_run")
+        default_run_dir.mkdir(parents=True, exist_ok=True)
+        normalized["run_dir"] = str(default_run_dir)
+    else:
+        Path(str(normalized["run_dir"])).mkdir(parents=True, exist_ok=True)
 
     # Normalize lists.
     for key in [
