@@ -1,10 +1,67 @@
-"""LangGraph orchestration for the complete RTL verification pipeline."""
+"""
+PragyanAI SiliconAI
+===================
+
+LangGraph verification workflow.
+
+The workflow creates ONE verification run and ONE ActivityLogger.
+
+All agents operate on the same state and therefore share the same
+observability context.
+
+Workflow
+--------
+
+RTL Analyzer
+     ↓
+Verification Planner
+     ↓
+Test Generator
+     ↓
+Testbench Generator
+     ↓
+Simulator
+     ↓
+Failure Analyzer
+     ↓
+Coverage
+     ↓
+Red Team
+     ↓
+Mutation
+     ↓
+Formal
+     ↓
+Judge
+     ↓
+Finalization
+"""
 
 from __future__ import annotations
 
-from langgraph.graph import StateGraph, START, END
+from typing import Any, Dict, Optional
 
-from core.state import VerificationState
+from config.settings import (
+    DEFAULT_MAX_ITERATIONS,
+    DEFAULT_RUN_FORMAL,
+    DEFAULT_RUN_MUTATION,
+    ENABLE_RED_TEAM,
+)
+
+from core.state import (
+    VerificationState,
+    create_initial_state,
+)
+
+from observability.run_manager import (
+    create_verification_run,
+    finalize_from_state,
+)
+
+# ---------------------------------------------------------------------------
+# Agents
+# ---------------------------------------------------------------------------
+
 from agents.rtl_analyzer import RTLAnalyzerAgent
 from agents.verification_planner import VerificationPlannerAgent
 from agents.test_generator import TestGeneratorAgent
@@ -16,135 +73,454 @@ from agents.red_team_agent import RedTeamAgent
 from agents.mutation_agent import MutationAgent
 from agents.formal_agent import FormalAgent
 from agents.verification_judge import VerificationJudgeAgent
-from graph.router import (
-    route_after_simulation, route_after_failure, route_after_coverage,
-    route_after_red_team, route_after_mutation, route_after_formal,
-    route_after_judge,
-)
 
-AGENTS = {
-    "rtl_analysis": RTLAnalyzerAgent(),
-    "planning": VerificationPlannerAgent(),
-    "test_generation": TestGeneratorAgent(),
-    "testbench_generation": TestbenchGeneratorAgent(),
-    "simulation": SimulatorAgent(),
-    "failure_analysis": FailureAnalyzerAgent(),
-    "coverage": CoverageAgent(),
-    "red_team": RedTeamAgent(),
-    "mutation": MutationAgent(),
-    "formal": FormalAgent(),
-    "judge": VerificationJudgeAgent(),
-}
 
-def _node(name):
-    def run(state):
-        result = AGENTS[name].execute(state)
-        logger = state.get("_activity_logger")
-        if logger:
-            _dump_artifacts(logger, name, state, result)
-        return result
-    return run
+# ============================================================================
+# Agent construction
+# ============================================================================
 
-def _dump_artifacts(logger, name, state, result):
-    step = AGENTS[name].step
-    merged = dict(state)
-    merged.update(result)
+def build_agents() -> Dict[str, Any]:
+    """
+    Construct all verification agents.
 
-    if name == "rtl_analysis":
-        logger.write_code("rtl_analysis", "input_rtl.v", merged.get("current_rtl", ""), step)
-        logger.write_json("rtl_analysis", "rtl_analysis.json", merged.get("rtl_analysis", {}), step)
-    elif name == "planning":
-        logger.write_json("planning", "verification_plan.json", merged.get("verification_plan", {}), step)
-    elif name == "test_generation":
-        tests = merged.get("generated_tests", [])
-        logger.write_json("test_generation", "tests.json", tests, step)
-        for i, test in enumerate(tests, 1):
-            logger.write_text("test_generation", f"test_{i:03d}.json", test, step)
-    elif name == "testbench_generation":
-        logger.write_code("testbench", "testbench.v", merged.get("testbench", ""), step)
-    elif name == "simulation":
-        logger.write_code("simulation", "design.v", merged.get("current_rtl", ""), step)
-        logger.write_code("simulation", "testbench.v", merged.get("testbench", ""), step)
-        logger.write_text("simulation", "compile.log", merged.get("compile_output", ""), step)
-        logger.write_text("simulation", "simulation.log", merged.get("simulation_output", ""), step)
-        logger.write_json("simulation", "simulation_result.json", merged.get("simulation_result", {}), step)
-    elif name == "failure_analysis":
-        logger.write_json("failure_analysis", "failure_analysis.json", merged.get("failure_analysis", {}), step)
-    elif name == "coverage":
-        logger.write_json("coverage", "coverage.json", merged.get("coverage", {}), step)
-    elif name == "red_team":
-        logger.write_json("red_team", "red_team.json", merged.get("red_team_results", []), step)
-    elif name == "mutation":
-        mutations = merged.get("mutation_results", [])
-        logger.write_json("mutation", "mutations.json", mutations, step)
-        for i, m in enumerate(mutations, 1):
-            logger.write_code("mutation", f"mutation_{i:03d}.v", m.get("mutated_rtl", ""), step)
-    elif name == "formal":
-        logger.write_json("formal", "formal.json", merged.get("formal_result", {}), step)
-    elif name == "judge":
-        logger.write_json("judge", "judge.json", merged.get("judge_result", {}), step)
+    Agents do not create loggers here.
 
-def build_workflow():
-    graph = StateGraph(VerificationState)
-    for name in AGENTS:
-        graph.add_node(name, _node(name))
+    The logger belongs to the verification run, not the agent.
+    """
 
-    graph.add_edge(START, "rtl_analysis")
-    graph.add_edge("rtl_analysis", "planning")
-    graph.add_edge("planning", "test_generation")
-    graph.add_edge("test_generation", "testbench_generation")
-    graph.add_edge("testbench_generation", "simulation")
+    return {
+        "rtl_analyzer": RTLAnalyzerAgent(),
 
-    graph.add_conditional_edges("simulation", route_after_simulation, {
-        "coverage": "coverage",
-        "failure_analysis": "failure_analysis",
-    })
-    graph.add_conditional_edges("failure_analysis", route_after_failure, {
-        "test_generation": "test_generation",
-        "end": END,
-    })
-    graph.add_conditional_edges("coverage", route_after_coverage, {
-        "red_team": "red_team",
-        "test_generation": "test_generation",
-    })
-    graph.add_conditional_edges("red_team", route_after_red_team, {
-        "mutation": "mutation",
-        "formal": "formal",
-        "judge": "judge",
-    })
-    graph.add_conditional_edges("mutation", route_after_mutation, {
-        "formal": "formal",
-        "judge": "judge",
-    })
-    graph.add_edge("formal", "judge")
-    graph.add_conditional_edges("judge", route_after_judge, {
-        "test_generation": "test_generation",
-        "end": END,
-    })
-    return graph.compile()
+        "verification_planner": VerificationPlannerAgent(),
 
-workflow = build_workflow()
+        "test_generator": TestGeneratorAgent(),
 
-def run_workflow(state: VerificationState):
-    from observability.run_manager import create_verification_run
-    if not state.get("run_id"):
-        run_id, run_dir, logger = create_verification_run({
-            "project": "PragyanAI SiliconAI",
-            "workflow": "agentic_rtl_verification",
-        })
-        state["run_id"] = run_id
-        state["run_dir"] = str(run_dir)
-        state["_activity_logger"] = logger
+        "testbench_generator": TestbenchGeneratorAgent(),
 
-    logger = state.get("_activity_logger")
-    result = workflow.invoke(state)
+        "simulator": SimulatorAgent(),
 
-    if logger:
-        logger.write_json("judge", "verification_summary.json", {
-            "run_id": result.get("run_id"),
-            "verdict": result.get("final_verdict"),
-            "verification_score": result.get("verification_score"),
-            "coverage": result.get("coverage"),
-            "mutation_score": result.get("mutation_score"),
-        }, 11)
-    return result
+        "failure_analyzer": FailureAnalyzerAgent(),
+
+        "coverage": CoverageAgent(),
+
+        "red_team": RedTeamAgent(),
+
+        "mutation": MutationAgent(),
+
+        "formal": FormalAgent(),
+
+        "judge": VerificationJudgeAgent(),
+    }
+
+
+# ============================================================================
+# Simple sequential execution
+# ============================================================================
+
+def _execute_agent(
+    state: VerificationState,
+    agent: Any,
+) -> VerificationState:
+    """
+    Execute one agent.
+
+    The BaseAgent class handles lifecycle logging.
+    """
+
+    return agent(
+        state
+    )
+
+
+# ============================================================================
+# Workflow runner
+# ============================================================================
+
+def run_workflow(
+    *,
+    specification: str,
+    rtl_code: str,
+    project_name: str = "custom_rtl",
+    reference_testbench: str = "",
+    reference_test_vectors: Any = None,
+    max_iterations: Optional[int] = None,
+    run_mutation: Optional[bool] = None,
+    run_formal: Optional[bool] = None,
+    run_red_team: Optional[bool] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> VerificationState:
+    """
+    Execute the complete verification workflow.
+
+    This function creates exactly ONE VerificationRun.
+
+    Parameters
+    ----------
+    specification:
+        RTL functional specification.
+
+    rtl_code:
+        Verilog/SystemVerilog source.
+
+    project_name:
+        Human-readable project/sample name.
+
+    reference_testbench:
+        Optional reference testbench.
+
+    reference_test_vectors:
+        Optional expected test vectors.
+
+    max_iterations:
+        Maximum verification iterations.
+
+    run_mutation:
+        Whether mutation testing is enabled.
+
+    run_formal:
+        Whether formal verification is enabled.
+
+    run_red_team:
+        Whether red-team testing is enabled.
+
+    metadata:
+        Additional run metadata.
+    """
+
+    # ------------------------------------------------------------------------
+    # Configuration defaults
+    # ------------------------------------------------------------------------
+
+    iterations = (
+        max_iterations
+        if max_iterations is not None
+        else DEFAULT_MAX_ITERATIONS
+    )
+
+    mutation_enabled = (
+        run_mutation
+        if run_mutation is not None
+        else DEFAULT_RUN_MUTATION
+    )
+
+    formal_enabled = (
+        run_formal
+        if run_formal is not None
+        else DEFAULT_RUN_FORMAL
+    )
+
+    red_team_enabled = (
+        run_red_team
+        if run_red_team is not None
+        else ENABLE_RED_TEAM
+    )
+
+    # ------------------------------------------------------------------------
+    # Create ONE verification run.
+    # ------------------------------------------------------------------------
+
+    run_metadata = dict(
+        metadata or {}
+    )
+
+    run_metadata.update(
+        {
+            "project_name": project_name,
+            "mutation_enabled": mutation_enabled,
+            "formal_enabled": formal_enabled,
+            "red_team_enabled": red_team_enabled,
+            "max_iterations": iterations,
+        }
+    )
+
+    verification_run = create_verification_run(
+        metadata=run_metadata
+    )
+
+    # ------------------------------------------------------------------------
+    # Create initial state with shared logger.
+    # ------------------------------------------------------------------------
+
+    state = create_initial_state(
+        specification=specification,
+        rtl_code=rtl_code,
+        project_name=project_name,
+        reference_testbench=reference_testbench,
+        reference_test_vectors=reference_test_vectors,
+        max_iterations=iterations,
+        verification_run=verification_run,
+    )
+
+    logger = verification_run.logger
+
+    logger.info(
+        "LangGraph verification workflow initialized.",
+        metadata={
+            "project_name": project_name,
+            "run_mutation": mutation_enabled,
+            "run_formal": formal_enabled,
+            "run_red_team": red_team_enabled,
+            "max_iterations": iterations,
+        },
+    )
+
+    # ------------------------------------------------------------------------
+    # Build agents.
+    # ------------------------------------------------------------------------
+
+    agents = build_agents()
+
+    try:
+
+        # ====================================================================
+        # Main verification flow
+        # ====================================================================
+
+        state = _execute_agent(
+            state,
+            agents["rtl_analyzer"],
+        )
+
+        state = _execute_agent(
+            state,
+            agents["verification_planner"],
+        )
+
+        state = _execute_agent(
+            state,
+            agents["test_generator"],
+        )
+
+        state = _execute_agent(
+            state,
+            agents["testbench_generator"],
+        )
+
+        state = _execute_agent(
+            state,
+            agents["simulator"],
+        )
+
+        # ====================================================================
+        # Failure analysis
+        # ====================================================================
+
+        state = _execute_agent(
+            state,
+            agents["failure_analyzer"],
+        )
+
+        # ====================================================================
+        # Coverage
+        # ====================================================================
+
+        state = _execute_agent(
+            state,
+            agents["coverage"],
+        )
+
+        # ====================================================================
+        # Red team
+        # ====================================================================
+
+        if red_team_enabled:
+
+            state = _execute_agent(
+                state,
+                agents["red_team"],
+            )
+
+        else:
+
+            logger.info(
+                "Red-team verification disabled."
+            )
+
+            state["red_team_results"] = {
+                "status": "disabled"
+            }
+
+        # ====================================================================
+        # Mutation
+        # ====================================================================
+
+        if mutation_enabled:
+
+            state = _execute_agent(
+                state,
+                agents["mutation"],
+            )
+
+        else:
+
+            logger.info(
+                "Mutation verification disabled."
+            )
+
+            state["mutation_results"] = {
+                "status": "disabled"
+            }
+
+        # ====================================================================
+        # Formal
+        # ====================================================================
+
+        if formal_enabled:
+
+            state = _execute_agent(
+                state,
+                agents["formal"],
+            )
+
+        else:
+
+            logger.info(
+                "Formal verification disabled."
+            )
+
+            state["formal_results"] = {
+                "status": "disabled"
+            }
+
+            state["formal_status"] = "disabled"
+
+        # ====================================================================
+        # Judge
+        # ====================================================================
+
+        state = _execute_agent(
+            state,
+            agents["judge"],
+        )
+
+        # ====================================================================
+        # Final state
+        # ====================================================================
+
+        state["agent_status"] = "completed"
+
+        # If judge didn't produce a verdict, derive one.
+        if not state.get(
+            "final_verdict"
+        ):
+
+            state["final_verdict"] = state.get(
+                "judge_verdict",
+                "INCONCLUSIVE",
+            )
+
+        logger.info(
+            "Verification workflow completed.",
+            metadata={
+                "final_verdict": state.get(
+                    "final_verdict"
+                ),
+                "verification_score": state.get(
+                    "verification_score",
+                    0.0,
+                ),
+                "coverage_score": state.get(
+                    "coverage_score",
+                    0.0,
+                ),
+                "mutation_score": state.get(
+                    "mutation_score",
+                    0.0,
+                ),
+            },
+        )
+
+        # ====================================================================
+        # Finalize one run
+        # ====================================================================
+
+        finalize_from_state(
+            state,
+            run=verification_run,
+            close_logger=False,
+        )
+
+        return state
+
+    except Exception as exc:
+
+        # --------------------------------------------------------------------
+        # Log workflow failure.
+        # --------------------------------------------------------------------
+
+        logger.log_exception(
+            "workflow_failed",
+            exc,
+            agent=state.get(
+                "current_agent"
+            ),
+            iteration=state.get(
+                "iteration",
+                0,
+            ),
+        )
+
+        state["agent_status"] = "failed"
+
+        # --------------------------------------------------------------------
+        # Finalize failed run.
+        # --------------------------------------------------------------------
+
+        try:
+
+            finalize_from_state(
+                state,
+                run=verification_run,
+                metadata={
+                    "error": str(exc),
+                },
+                close_logger=False,
+            )
+
+        except Exception as finalize_error:
+
+            logger.error(
+                "Failed to finalize verification run.",
+                metadata={
+                    "error": str(
+                        finalize_error
+                    )
+                },
+            )
+
+        raise
+
+
+# ============================================================================
+# Convenience wrapper
+# ============================================================================
+
+def run_verification(
+    specification: str,
+    rtl_code: str,
+    **kwargs: Any,
+) -> VerificationState:
+    """
+    Backward-compatible convenience wrapper.
+
+    Example:
+
+        state = run_verification(
+            specification=spec,
+            rtl_code=rtl,
+        )
+    """
+
+    return run_workflow(
+        specification=specification,
+        rtl_code=rtl_code,
+        **kwargs,
+    )
+
+
+__all__ = [
+    "build_agents",
+    "run_workflow",
+    "run_verification",
+]
+
