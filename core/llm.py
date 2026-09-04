@@ -2,28 +2,31 @@
 PragyanAI SiliconAI
 ===================
 
-Central LLM interface for the Agentic RTL Verification Platform.
+Centralized LLM interface.
 
-Responsibilities
-----------------
-- Create the Groq Chat model from central settings.
-- Never hard-code an agent-specific model.
-- Use GROQ_MODEL from config.settings.
-- Provide text generation.
-- Provide JSON generation.
-- Gracefully handle missing API keys.
-- Provide deterministic fallbacks when LLM is unavailable.
-- Keep LLM behavior centralized so every agent uses the same configuration.
+All agents that require an LLM should use this module.
 
-Supported backend
+Do NOT instantiate ChatGroq directly inside individual agents.
+
+Supported operations
+--------------------
+
+    get_llm()
+    invoke_text()
+    invoke_json()
+    invoke_json_strict()
+    check_llm_available()
+
+Design principles
 -----------------
-Groq + LangChain
 
-Default model
--------------
-openai/gpt-oss-120b
-
-SymbiYosys is NOT required.
+* Groq model is centrally configured.
+* Streamlit Secrets are supported through config.settings.
+* Environment variables are supported.
+* LLM failures are captured instead of crashing the entire workflow.
+* JSON responses are normalized.
+* Markdown fences around JSON are removed.
+* Deterministic verification does not depend on this module.
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Dict, Optional
+from typing import Any
 
 from config.settings import (
     GROQ_API_KEY,
@@ -41,9 +44,16 @@ from config.settings import (
 )
 
 
-# ============================================================================
-# OPTIONAL LANGCHAIN / GROQ IMPORT
-# ============================================================================
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DEFAULT_MODEL = "openai/gpt-oss-120b"
+
+
+# ---------------------------------------------------------------------------
+# Optional LangChain import
+# ---------------------------------------------------------------------------
 
 try:
     from langchain_groq import ChatGroq
@@ -55,147 +65,153 @@ except Exception:
     LANGCHAIN_GROQ_AVAILABLE = False
 
 
-# ============================================================================
-# CONSTANTS
-# ============================================================================
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
-DEFAULT_MODEL = "openai/gpt-oss-120b"
-
-
-# ============================================================================
-# MODEL RESOLUTION
-# ============================================================================
-
-def get_model_name() -> str:
+def _streamlit_secret(
+    name: str,
+) -> str:
     """
-    Return the configured Groq model.
-
-    Priority:
-        1. GROQ_MODEL environment variable
-        2. config.settings.GROQ_MODEL
-        3. safe default
-
-    The application should therefore never silently use
-    llama-3.3-70b-versatile unless the user explicitly configures it.
+    Read a Streamlit secret without making Streamlit mandatory.
     """
 
-    model = (
-        os.getenv("GROQ_MODEL")
-        or GROQ_MODEL
-        or DEFAULT_MODEL
-    ).strip()
+    try:
+        import streamlit as st
 
-    if not model:
-        model = DEFAULT_MODEL
+        if (
+            hasattr(st, "secrets")
+            and name in st.secrets
+        ):
+            value = st.secrets[name]
 
-    return model
+            if value is not None:
+                return str(value).strip()
 
+    except Exception:
+        pass
 
-# ============================================================================
-# API KEY
-# ============================================================================
+    return ""
+
 
 def get_api_key() -> str:
     """
-    Return the configured Groq API key.
+    Resolve Groq API key.
 
-    Environment variables take precedence because this works
-    cleanly with Streamlit Cloud secrets.
+    Priority:
+
+        environment
+        Streamlit secret
+        settings.py
     """
 
-    return (
-        os.getenv("GROQ_API_KEY")
-        or GROQ_API_KEY
-        or ""
+    value = os.getenv(
+        "GROQ_API_KEY",
+        "",
+    ).strip()
+
+    if value:
+        return value
+
+    value = _streamlit_secret(
+        "GROQ_API_KEY"
+    )
+
+    if value:
+        return value
+
+    return str(
+        GROQ_API_KEY or ""
     ).strip()
 
 
-# ============================================================================
-# CONFIGURATION SUMMARY
-# ============================================================================
-
-def get_llm_config() -> Dict[str, Any]:
+def get_model_name() -> str:
     """
-    Return safe LLM configuration information.
+    Resolve Groq model.
 
-    Never returns the actual API key.
+    Priority:
+
+        environment
+        Streamlit secret
+        settings.py
+        default
     """
 
-    api_key = get_api_key()
+    value = os.getenv(
+        "GROQ_MODEL",
+        "",
+    ).strip()
 
-    return {
-        "provider": "groq",
-        "model": get_model_name(),
-        "temperature": LLM_TEMPERATURE,
-        "max_tokens": LLM_MAX_TOKENS,
-        "api_key_configured": bool(api_key),
-        "langchain_groq_available": LANGCHAIN_GROQ_AVAILABLE,
-    }
+    if value:
+        return value
+
+    value = _streamlit_secret(
+        "GROQ_MODEL"
+    )
+
+    if value:
+        return value
+
+    value = str(
+        GROQ_MODEL or ""
+    ).strip()
+
+    if value:
+        return value
+
+    return DEFAULT_MODEL
 
 
-# ============================================================================
-# MODEL FACTORY
-# ============================================================================
+# ---------------------------------------------------------------------------
+# LLM construction
+# ---------------------------------------------------------------------------
 
 def get_llm(
-    model: Optional[str] = None,
-    temperature: Optional[float] = None,
-    max_tokens: Optional[int] = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
 ):
     """
-    Create and return the central ChatGroq model.
+    Construct the configured ChatGroq client.
 
-    Parameters
-    ----------
-    model:
-        Optional explicit model override.
+    Raises a RuntimeError when LangChain-Groq is unavailable or the
+    API key is missing.
 
-    temperature:
-        Optional temperature override.
-
-    max_tokens:
-        Optional completion token limit.
-
-    Returns
-    -------
-    ChatGroq
-
-    Raises
-    ------
-    RuntimeError
-        If langchain-groq is unavailable or API key is missing.
+    The caller can then choose a deterministic fallback.
     """
 
     if not LANGCHAIN_GROQ_AVAILABLE:
         raise RuntimeError(
             "langchain-groq is not installed. "
-            "Add 'langchain-groq' to requirements.txt."
+            "Install it with: pip install langchain-groq"
         )
 
     api_key = get_api_key()
 
     if not api_key:
         raise RuntimeError(
-            "GROQ_API_KEY is not configured. "
-            "Add GROQ_API_KEY to Streamlit Cloud Secrets "
-            "or the environment."
+            "GROQ_API_KEY is not configured."
         )
 
     selected_model = (
-        model
-        or get_model_name()
-    ).strip()
+        str(model).strip()
+        if model
+        else get_model_name()
+    )
+
+    if not selected_model:
+        selected_model = DEFAULT_MODEL
 
     selected_temperature = (
-        LLM_TEMPERATURE
-        if temperature is None
-        else temperature
+        float(temperature)
+        if temperature is not None
+        else float(LLM_TEMPERATURE)
     )
 
     selected_max_tokens = (
-        LLM_MAX_TOKENS
-        if max_tokens is None
-        else max_tokens
+        int(max_tokens)
+        if max_tokens is not None
+        else int(LLM_MAX_TOKENS)
     )
 
     return ChatGroq(
@@ -206,367 +222,354 @@ def get_llm(
     )
 
 
-# ============================================================================
-# MODEL AVAILABILITY CHECK
-# ============================================================================
+# ---------------------------------------------------------------------------
+# Response normalization
+# ---------------------------------------------------------------------------
 
-def check_llm_available(
-    model: Optional[str] = None,
-) -> Dict[str, Any]:
+def _response_to_text(
+    response: Any,
+) -> str:
     """
-    Perform a lightweight LLM availability check.
-
-    This is useful from Streamlit or diagnostics.
-
-    Returns
-    -------
-    dict
-        {
-            "available": bool,
-            "model": str,
-            "message": str
-        }
-    """
-
-    selected_model = (
-        model
-        or get_model_name()
-    )
-
-    if not LANGCHAIN_GROQ_AVAILABLE:
-        return {
-            "available": False,
-            "model": selected_model,
-            "message": (
-                "langchain-groq is not installed."
-            ),
-        }
-
-    if not get_api_key():
-        return {
-            "available": False,
-            "model": selected_model,
-            "message": (
-                "GROQ_API_KEY is not configured."
-            ),
-        }
-
-    try:
-        llm = get_llm(
-            model=selected_model,
-            temperature=0.0,
-            max_tokens=8,
-        )
-
-        llm.invoke(
-            [
-                (
-                    "system",
-                    "You are a verification system health checker.",
-                ),
-                (
-                    "human",
-                    "Reply with OK.",
-                ),
-            ]
-        )
-
-        return {
-            "available": True,
-            "model": selected_model,
-            "message": "Groq model is available.",
-        }
-
-    except Exception as exc:
-        return {
-            "available": False,
-            "model": selected_model,
-            "message": str(exc),
-        }
-
-
-# ============================================================================
-# TEXT EXTRACTION
-# ============================================================================
-
-def _extract_response_text(response: Any) -> str:
-    """
-    Extract plain text from a LangChain response.
+    Convert a LangChain response into plain text.
     """
 
     if response is None:
         return ""
 
+    if isinstance(
+        response,
+        str,
+    ):
+        return response.strip()
+
     content = getattr(
         response,
         "content",
-        response,
+        None,
     )
 
-    if isinstance(content, str):
+    if content is None:
+        return str(
+            response
+        ).strip()
+
+    if isinstance(
+        content,
+        str,
+    ):
         return content.strip()
 
-    if isinstance(content, list):
-        parts = []
+    if isinstance(
+        content,
+        list,
+    ):
+        parts: list[str] = []
 
         for item in content:
-            if isinstance(item, str):
+
+            if isinstance(
+                item,
+                str,
+            ):
                 parts.append(item)
 
-            elif isinstance(item, dict):
-                text = item.get("text")
+            elif isinstance(
+                item,
+                dict,
+            ):
+                text = item.get(
+                    "text"
+                )
 
                 if text:
-                    parts.append(str(text))
+                    parts.append(
+                        str(text)
+                    )
 
-        return "\n".join(parts).strip()
+        return "\n".join(
+            parts
+        ).strip()
 
-    return str(content).strip()
-
-
-# ============================================================================
-# MARKDOWN FENCE CLEANUP
-# ============================================================================
-
-def _strip_markdown_fences(text: str) -> str:
-    """
-    Remove common Markdown code fences.
-
-    Example:
-
-        ```json
-        {"a": 1}
-        ```
-
-    becomes:
-
-        {"a": 1}
-    """
-
-    if not text:
-        return ""
-
-    cleaned = text.strip()
-
-    cleaned = re.sub(
-        r"^```(?:json|JSON)?\s*",
-        "",
-        cleaned,
-    )
-
-    cleaned = re.sub(
-        r"\s*```$",
-        "",
-        cleaned,
-    )
-
-    return cleaned.strip()
+    return str(
+        content
+    ).strip()
 
 
-# ============================================================================
-# JSON EXTRACTION
-# ============================================================================
+# ---------------------------------------------------------------------------
+# JSON cleanup
+# ---------------------------------------------------------------------------
 
-def _extract_json_text(text: str) -> str:
-    """
-    Attempt to isolate a JSON object or JSON array from model output.
-    """
-
-    cleaned = _strip_markdown_fences(text)
-
-    if not cleaned:
-        return cleaned
-
-    # Already valid JSON.
-    try:
-        json.loads(cleaned)
-        return cleaned
-    except Exception:
-        pass
-
-    # Try object.
-    object_start = cleaned.find("{")
-    object_end = cleaned.rfind("}")
-
-    if (
-        object_start >= 0
-        and object_end > object_start
-    ):
-        candidate = cleaned[
-            object_start:
-            object_end + 1
-        ]
-
-        try:
-            json.loads(candidate)
-            return candidate
-        except Exception:
-            pass
-
-    # Try array.
-    array_start = cleaned.find("[")
-    array_end = cleaned.rfind("]")
-
-    if (
-        array_start >= 0
-        and array_end > array_start
-    ):
-        candidate = cleaned[
-            array_start:
-            array_end + 1
-        ]
-
-        try:
-            json.loads(candidate)
-            return candidate
-        except Exception:
-            pass
-
-    return cleaned
-
-
-# ============================================================================
-# TEXT INVOCATION
-# ============================================================================
-
-def invoke_text(
-    system: str,
-    user: str,
-    fallback: str = "",
-    *,
-    model: Optional[str] = None,
-    temperature: Optional[float] = None,
-    max_tokens: Optional[int] = None,
+def _strip_code_fences(
+    text: str,
 ) -> str:
     """
-    Invoke the configured Groq model.
+    Remove markdown code fences.
 
-    If the model is unavailable or the API fails, return fallback.
+    Handles:
 
-    This behavior is intentional because RTL verification should
-    remain usable in deterministic/demo mode.
+        ```json
+        {...}
+        ```
+
+        ```
+        {...}
+        ```
     """
 
+    value = str(
+        text or ""
+    ).strip()
+
+    if value.startswith(
+        "```"
+    ):
+        value = re.sub(
+            r"^```(?:json|JSON)?\s*",
+            "",
+            value,
+        )
+
+        value = re.sub(
+            r"\s*```$",
+            "",
+            value,
+        )
+
+    return value.strip()
+
+
+def _extract_json_object(
+    text: str,
+) -> str:
+    """
+    Extract the first balanced JSON object.
+
+    This handles responses such as:
+
+        Here is the result:
+
+        {
+            "status": "PASS"
+        }
+
+    """
+
+    value = _strip_code_fences(
+        text
+    )
+
+    if (
+        value.startswith("{")
+        and value.endswith("}")
+    ):
+        return value
+
+    start = value.find(
+        "{"
+    )
+
+    if start < 0:
+        return value
+
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for index in range(
+        start,
+        len(value),
+    ):
+
+        char = value[index]
+
+        if escaped:
+            escaped = False
+            continue
+
+        if char == "\\":
+            escaped = True
+            continue
+
+        if char == '"':
+            in_string = not in_string
+            continue
+
+        if in_string:
+            continue
+
+        if char == "{":
+            depth += 1
+
+        elif char == "}":
+            depth -= 1
+
+            if depth == 0:
+                return value[
+                    start:index + 1
+                ]
+
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Text invocation
+# ---------------------------------------------------------------------------
+
+def invoke_text(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    fallback: str = "",
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    model: str | None = None,
+) -> str:
+    """
+    Invoke the LLM and return text.
+
+    On failure, returns fallback rather than terminating the verification
+    workflow.
+
+    This behavior is intentional because deterministic verification stages
+    should continue whenever possible.
+    """
+
+    system_text = str(
+        system_prompt or ""
+    ).strip()
+
+    user_text = str(
+        user_prompt or ""
+    ).strip()
+
     try:
+
         llm = get_llm(
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
         )
 
+        messages = [
+            (
+                "system",
+                system_text,
+            ),
+            (
+                "human",
+                user_text,
+            ),
+        ]
+
         response = llm.invoke(
-            [
-                (
-                    "system",
-                    system,
-                ),
-                (
-                    "human",
-                    user,
-                ),
-            ]
+            messages
         )
 
-        text = _extract_response_text(
+        text = _response_to_text(
             response
         )
 
         if text:
             return text
 
-        return fallback
+        return str(
+            fallback or ""
+        )
 
     except Exception:
-        return fallback
+        return str(
+            fallback or ""
+        )
 
 
-# ============================================================================
-# JSON INVOCATION
-# ============================================================================
+# ---------------------------------------------------------------------------
+# JSON invocation
+# ---------------------------------------------------------------------------
 
 def invoke_json(
-    system: str,
-    user: str,
-    fallback: Any,
+    system_prompt: str,
+    user_prompt: str,
     *,
-    model: Optional[str] = None,
-    temperature: Optional[float] = None,
-    max_tokens: Optional[int] = None,
-) -> Any:
+    fallback: dict[str, Any] | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
     """
-    Invoke the configured LLM and parse JSON.
+    Invoke the LLM and parse a JSON object.
 
-    Important:
-        The function does NOT allow a failed model call to crash
-        the complete verification workflow.
+    Invalid JSON never becomes an empty successful result.
 
-    If the model cannot be called or returns invalid JSON,
-    the supplied fallback is returned.
+    Instead, fallback is returned and an internal metadata marker is added.
     """
 
-    fallback_value = fallback
-
-    if isinstance(fallback, str):
-        try:
-            fallback_value = json.loads(
-                fallback
-            )
-        except Exception:
-            fallback_value = fallback
-
-    json_system = (
-        system
-        + "\n\n"
-        + "Return ONLY valid JSON. "
-        + "Do not use Markdown fences. "
-        + "Do not include explanations outside JSON."
+    fallback_value: dict[str, Any] = dict(
+        fallback or {}
     )
 
     raw = invoke_text(
-        json_system,
-        user,
-        "",
-        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        fallback="",
         temperature=temperature,
         max_tokens=max_tokens,
+        model=model,
     )
 
-    if not raw:
+    if not raw.strip():
         return fallback_value
 
-    cleaned = _extract_json_text(
+    cleaned = _extract_json_object(
         raw
     )
 
     try:
-        return json.loads(
+
+        parsed = json.loads(
             cleaned
         )
 
-    except Exception:
+        if isinstance(
+            parsed,
+            dict,
+        ):
+            return parsed
+
+        return fallback_value
+
+    except (
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ):
         return fallback_value
 
 
-# ============================================================================
-# STRICT JSON INVOCATION
-# ============================================================================
+# ---------------------------------------------------------------------------
+# Strict JSON invocation
+# ---------------------------------------------------------------------------
 
 def invoke_json_strict(
-    system: str,
-    user: str,
+    system_prompt: str,
+    user_prompt: str,
     *,
-    model: Optional[str] = None,
-    temperature: Optional[float] = None,
-    max_tokens: Optional[int] = None,
-) -> Any:
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
     """
-    Strict version of invoke_json.
+    Strict JSON invocation.
 
-    Unlike invoke_json(), this raises an exception when
-    the model call fails or invalid JSON is returned.
+    Unlike invoke_json(), this raises when the LLM cannot return valid JSON.
 
-    Useful for diagnostics and development.
+    Use this only where the calling agent explicitly wants to handle
+    the error.
     """
+
+    if not get_api_key():
+        raise RuntimeError(
+            "GROQ_API_KEY is not configured."
+        )
 
     llm = get_llm(
         model=model,
@@ -578,18 +581,20 @@ def invoke_json_strict(
         [
             (
                 "system",
-                system
-                + "\n\n"
-                + "Return ONLY valid JSON.",
+                str(
+                    system_prompt or ""
+                ).strip(),
             ),
             (
                 "human",
-                user,
+                str(
+                    user_prompt or ""
+                ).strip(),
             ),
         ]
     )
 
-    raw = _extract_response_text(
+    raw = _response_to_text(
         response
     )
 
@@ -598,66 +603,166 @@ def invoke_json_strict(
             "LLM returned an empty response."
         )
 
-    cleaned = _extract_json_text(
+    cleaned = _extract_json_object(
         raw
     )
 
-    return json.loads(
-        cleaned
-    )
+    try:
+
+        parsed = json.loads(
+            cleaned
+        )
+
+    except (
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+
+        raise ValueError(
+            "LLM returned invalid JSON."
+        ) from exc
+
+    if not isinstance(
+        parsed,
+        dict,
+    ):
+        raise ValueError(
+            "LLM JSON response must be an object."
+        )
+
+    return parsed
 
 
-# ============================================================================
-# SAFE MODEL NAME
-# ============================================================================
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
 
-def is_known_groq_model(model: str) -> bool:
+def check_llm_available() -> dict[str, Any]:
     """
-    Return whether the model is one of the known production models
-    currently used by this application.
+    Perform a lightweight LLM availability check.
 
-    This is intentionally conservative.
+    This does not execute a verification task.
 
-    It does NOT guarantee that the user's Groq project has permission
-    to access the model.
+    Returns a structured diagnostic object.
     """
 
-    known_models = {
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
+    model = get_model_name()
+    api_key = get_api_key()
+
+    result = {
+        "available": False,
+        "configured": bool(api_key),
+        "langchain_groq_available": (
+            LANGCHAIN_GROQ_AVAILABLE
+        ),
+        "model": model,
+        "error": "",
     }
 
-    return model.strip() in known_models
+    if not api_key:
+        result["error"] = (
+            "GROQ_API_KEY is not configured."
+        )
+
+        return result
+
+    if not LANGCHAIN_GROQ_AVAILABLE:
+        result["error"] = (
+            "langchain-groq is not installed."
+        )
+
+        return result
+
+    try:
+
+        llm = get_llm(
+            model=model,
+            temperature=0.0,
+            max_tokens=32,
+        )
+
+        response = llm.invoke(
+            [
+                (
+                    "system",
+                    "You are a connectivity test.",
+                ),
+                (
+                    "human",
+                    "Reply with exactly: OK",
+                ),
+            ]
+        )
+
+        text = _response_to_text(
+            response
+        )
+
+        if text:
+            result["available"] = True
+            result["response"] = text
+
+        else:
+            result["error"] = (
+                "LLM returned an empty response."
+            )
+
+    except Exception as exc:
+
+        result["error"] = str(
+            exc
+        )
+
+    return result
 
 
-# ============================================================================
-# MODEL RECOMMENDATION
-# ============================================================================
+# ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
 
-def recommended_model() -> str:
+def llm_config_summary() -> dict[str, Any]:
     """
-    Return the recommended default model for this platform.
+    Return safe LLM configuration information.
+
+    API key is intentionally never returned.
     """
 
-    return DEFAULT_MODEL
+    return {
+        "model": get_model_name(),
+        "api_key_configured": bool(
+            get_api_key()
+        ),
+        "langchain_groq_available": (
+            LANGCHAIN_GROQ_AVAILABLE
+        ),
+        "temperature": float(
+            LLM_TEMPERATURE
+        ),
+        "max_tokens": int(
+            LLM_MAX_TOKENS
+        ),
+    }
 
 
-# ============================================================================
-# PUBLIC API
-# ============================================================================
+# ---------------------------------------------------------------------------
+# Public exports
+# ---------------------------------------------------------------------------
 
 __all__ = [
-    "get_llm",
-    "get_model_name",
+    "DEFAULT_MODEL",
+
+    "LANGCHAIN_GROQ_AVAILABLE",
+
     "get_api_key",
-    "get_llm_config",
-    "check_llm_available",
+    "get_model_name",
+    "get_llm",
+
     "invoke_text",
     "invoke_json",
     "invoke_json_strict",
-    "is_known_groq_model",
-    "recommended_model",
+
+    "check_llm_available",
+    "llm_config_summary",
 ]
 
