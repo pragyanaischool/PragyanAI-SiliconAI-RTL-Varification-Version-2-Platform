@@ -1,11 +1,10 @@
 """Base Agent class providing shared execution hooks and CoT logging."""
 
-from __future5__ import annotations
+from __future__ import annotations
 
 import logging
 import time
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Any, Dict
 
 logger = logging.getLogger("PragyanAI.Agents.Base")
