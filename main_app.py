@@ -134,7 +134,7 @@ import streamlit as st
 
 
 # ============================================================================
-# Page configuration
+# Page configuration & Custom Styling
 # ============================================================================
 
 st.set_page_config(
@@ -142,6 +142,32 @@ st.set_page_config(
     page_icon=STREAMLIT_PAGE_ICON,
     layout="wide",
     initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
+    <style>
+    .stMetric {
+        background-color: #1e293b;
+        padding: 15px;
+        border-radius: 8px;
+        border: 1px solid #334155;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+    .stMetric label {
+        color: #94a3b8 !important;
+        font-weight: 600;
+    }
+    .stMetric [data-testid="stMetricValue"] {
+        color: #f8fafc !important;
+        font-size: 1.8rem !important;
+    }
+    div.block-container {
+        padding-top: 2rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 
@@ -215,7 +241,6 @@ module tb_counter;
     end
 
     initial begin
-
         reset = 1'b1;
         enable = 1'b0;
 
@@ -2301,7 +2326,7 @@ if current_state:
 
     # =========================================================================
     # Final verdict
-    # =========================================================
+    # =========================================================================
 
     st.divider()
 
