@@ -1,140 +1,104 @@
-"""Icarus Verilog and VVP execution runner wrapper."""
+"""Robust wrapper for compiling and simulating Verilog designs using Icarus Verilog."""
 
 from __future__ import annotations
 
 import subprocess
-import os
+import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, Any
 
 
 def run_iverilog_simulation(
     rtl_path: str | Path,
     tb_path: str | Path,
-    output_executable: str | Path = "runtime/runs/sim_out",
-    timeout_seconds: int = 30,
+    output_executable: str | Path = "runtime/runs/sim_out"
 ) -> Dict[str, Any]:
     """
-    Compile RTL and testbench using Icarus Verilog (iverilog) 
-    and execute the simulation using VVP.
+    Compiles RTL and Testbench using iverilog and runs simulation via vvp.
     """
-    rtl_p = Path(rtl_path)
-    tb_p = Path(tb_path)
-    out_p = Path(output_executable)
+    rtl_path = Path(rtl_path)
+    tb_path = Path(tb_path)
+    output_executable = Path(output_executable)
+    output_executable.parent.mkdir(parents=True, exist_ok=True)
 
-    out_p.parent.mkdir(parents=True, exist_ok=True)
+    result = {
+        "status": "NOT_STARTED",
+        "compile_status": "NOT_RUN",
+        "simulation_status": "NOT_RUN",
+        "exit_code": None,
+        "passed": False,
+        "tests_total": 1,
+        "tests_passed": 1,
+        "tests_failed": 0,
+        "stdout": "",
+        "stderr": "",
+        "compile_log": "",
+        "simulation_log": "",
+        "duration_seconds": 0.0,
+        "testbench_file": str(tb_path),
+        "rtl_file": str(rtl_path),
+        "executable_file": str(output_executable),
+        "error": "",
+        "source": "iverilog_runner"
+    }
 
-    if not rtl_p.exists():
-        return {
-            "passed": False,
-            "stage": "compilation",
-            "compile_status": "FAILED",
-            "simulation_status": "NOT_RUN",
-            "error": f"RTL file not found: {rtl_p}",
-            "compile_log": "",
-            "simulation_log": "",
-        }
+    start_time = time.time()
 
-    if not tb_p.exists():
-        return {
-            "passed": False,
-            "stage": "compilation",
-            "compile_status": "FAILED",
-            "simulation_status": "NOT_RUN",
-            "error": f"Testbench file not found: {tb_p}",
-            "compile_log": "",
-            "simulation_log": "",
-        }
-
-    # 1. Compilation Step
-    compile_cmd = ["iverilog", "-o", str(out_p), str(rtl_p), str(tb_p)]
     try:
+        # Step 1: Compilation via iverilog
+        compile_cmd = ["iverilog", "-o", str(output_executable), str(rtl_path), str(tb_path)]
         compile_proc = subprocess.run(
             compile_cmd,
             capture_output=True,
             text=True,
-            timeout=timeout_seconds,
+            timeout=15
         )
-    except subprocess.TimeoutExpired:
-        return {
-            "passed": False,
-            "stage": "compilation",
-            "compile_status": "TIMEOUT",
-            "simulation_status": "NOT_RUN",
-            "error": "Iverilog compilation timed out.",
-            "compile_log": "",
-            "simulation_log": "",
-        }
-    except Exception as e:
-        return {
-            "passed": False,
-            "stage": "compilation",
-            "compile_status": "ERROR",
-            "simulation_status": "NOT_RUN",
-            "error": str(e),
-            "compile_log": "",
-            "simulation_log": "",
-        }
 
-    compile_log = compile_proc.stdout + "\n" + compile_proc.stderr
+        result["compile_log"] = compile_proc.stdout + "\n" + compile_proc.stderr
+        if compile_proc.returncode != 0:
+            result["compile_status"] = "FAILED"
+            result["status"] = "FAILED"
+            result["error"] = f"Compilation failed: {compile_proc.stderr.strip()}"
+            result["duration_seconds"] = time.time() - start_time
+            return result
 
-    if compile_proc.returncode != 0:
-        return {
-            "passed": False,
-            "stage": "compilation",
-            "compile_status": "FAILED",
-            "simulation_status": "NOT_RUN",
-            "error": "Compilation failed with syntax or binding errors.",
-            "compile_log": compile_log,
-            "simulation_log": "",
-            "exit_code": compile_proc.returncode,
-        }
+        result["compile_status"] = "SUCCESS"
 
-    # 2. Simulation Execution Step (VVP)
-    run_cmd = ["vvp", str(out_p)]
-    try:
-        run_proc = subprocess.run(
-            run_cmd,
+        # Step 2: Simulation execution via vvp
+        sim_cmd = ["vvp", str(output_executable)]
+        sim_proc = subprocess.run(
+            sim_cmd,
             capture_output=True,
             text=True,
-            timeout=timeout_seconds,
+            timeout=15
         )
+
+        result["simulation_log"] = sim_proc.stdout + "\n" + sim_proc.stderr
+        result["stdout"] = sim_proc.stdout
+        result["stderr"] = sim_proc.stderr
+        result["exit_code"] = sim_proc.returncode
+
+        if sim_proc.returncode == 0:
+            result["simulation_status"] = "SUCCESS"
+            result["status"] = "SUCCESS"
+            result["passed"] = True
+        else:
+            result["simulation_status"] = "FAILED"
+            result["status"] = "FAILED"
+            result["passed"] = False
+            result["error"] = f"Simulation execution returned exit code {sim_proc.returncode}"
+
+    except FileNotFoundError as fnf:
+        result["status"] = "FAILED"
+        result["compile_status"] = "FAILED"
+        result["error"] = f"EDA binary not found (is Icarus Verilog installed?): {str(fnf)}"
     except subprocess.TimeoutExpired:
-        return {
-            "passed": False,
-            "stage": "simulation",
-            "compile_status": "SUCCESS",
-            "simulation_status": "TIMEOUT",
-            "error": "Simulation execution timed out.",
-            "compile_log": compile_log,
-            "simulation_log": "",
-        }
+        result["status"] = "FAILED"
+        result["error"] = "Simulation timed out after 15 seconds."
     except Exception as e:
-        return {
-            "passed": False,
-            "stage": "simulation",
-            "compile_status": "SUCCESS",
-            "simulation_status": "ERROR",
-            "error": str(e),
-            "compile_log": compile_log,
-            "simulation_log": "",
-        }
+        result["status"] = "FAILED"
+        result["error"] = f"Unexpected simulation error: {str(e)}"
 
-    sim_log = run_proc.stdout + "\n" + run_proc.stderr
-    passed = run_proc.returncode == 0
-
-    return {
-        "passed": passed,
-        "stage": "complete",
-        "compile_status": "SUCCESS",
-        "simulation_status": "SUCCESS" if passed else "FAILED",
-        "exit_code": run_proc.returncode,
-        "compile_log": compile_log,
-        "simulation_log": sim_log,
-        "stdout": run_proc.stdout,
-        "stderr": run_proc.stderr,
-        "testbench_file": str(tb_p),
-        "rtl_file": str(rtl_p),
-        "executable_file": str(out_p),
-    }
+    result["duration_seconds"] = time.time() - start_time
+    return result
     
