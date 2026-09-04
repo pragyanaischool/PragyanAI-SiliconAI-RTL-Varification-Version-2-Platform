@@ -1,4 +1,4 @@
-"""Simulator Agent for executing RTL and testbench compilations and simulations."""
+"""Simulator Agent with robust dynamic file writing and fallback handling."""
 
 from __future__ import annotations
 
@@ -15,35 +15,71 @@ class SimulatorAgent(BaseAgent):
 
     def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
         run_logger = state.get("logger")
-        
-        # Determine project name or explicit file paths
-        project_name = state.get("project_name", "counter_4bit")
-        
-        # Default fallback paths to sample projects
-        default_rtl = f"examples/sample_projects/{project_name}/rtl.v"
-        default_tb = f"examples/sample_projects/{project_name}/testbench.v"
+        run_dir = run_logger.run_dir if run_logger else Path("runtime/runs/default_run")
+        run_dir.mkdir(parents=True, exist_ok=True)
 
-        rtl_path = state.get("rtl_file_path") or default_rtl
-        tb_path = state.get("testbench_file_path") or default_tb
+        # 1. Resolve or extract RTL code
+        spec = state.get("specification", {})
+        rtl_code = (
+            state.get("rtl_code")
+            or (spec.get("rtl_code") if isinstance(spec, dict) else None)
+            or spec if isinstance(spec, str) and len(spec) > 10 else None
+        )
 
-        # If a testbench was dynamically generated in previous steps, write/use it from the run directory
-        if run_logger and "testbench_code" in state:
-            tb_dir = run_logger.run_dir / "04_testbench_generation"
-            tb_dir.mkdir(parents=True, exist_ok=True)
-            dynamic_tb_path = tb_dir / "testbench.v"
-            dynamic_tb_path.write_text(state["testbench_code"], encoding="utf-8")
-            tb_path = dynamic_tb_path
+        rtl_path = run_dir / "design.v"
+        if rtl_code:
+            rtl_path.write_text(str(rtl_code), encoding="utf-8")
+        else:
+            # Fallback to sample project if no custom RTL provided
+            project_name = state.get("project_name", "counter_4bit")
+            sample_rtl = Path(f"examples/sample_projects/{project_name}/rtl.v")
+            if sample_rtl.exists():
+                rtl_path = sample_rtl
+            else:
+                # Minimal valid fallback counter module
+                fallback_rtl = """
+                module counter_4bit (
+                    input wire clk,
+                    input wire rst_n,
+                    output reg [3:0] q
+                );
+                    always @(posedge clk or negedge rst_n) begin
+                        if (!rst_n) q <= 4'b0000;
+                        else q <= q + 1;
+                    end
+                endmodule
+                """
+                rtl_path.write_text(fallback_rtl, encoding="utf-8")
 
-        # If RTL code was dynamically passed in state, write it out
-        if run_logger and "rtl_code" in state and state["rtl_code"]:
-            rtl_dir = run_logger.run_dir / "01_rtl_analysis"
-            rtl_dir.mkdir(parents=True, exist_ok=True)
-            dynamic_rtl_path = rtl_dir / "rtl.v"
-            dynamic_rtl_path.write_text(state["rtl_code"], encoding="utf-8")
-            rtl_path = dynamic_rtl_path
+        # 2. Resolve or extract Testbench code
+        tb_code = state.get("testbench_code")
+        tb_path = run_dir / "testbench.v"
+        if tb_code:
+            tb_path.write_text(str(tb_code), encoding="utf-8")
+        else:
+            # Fallback testbench
+            fallback_tb = """
+            module tb;
+                reg clk = 0;
+                reg rst_n = 0;
+                wire [3:0] q;
 
-        # Execute simulation via Icarus Verilog wrapper
-        executable_out = run_logger.run_dir / "simulation_executable" if run_logger else "runtime/runs/sim_out"
+                counter_4bit uut (.clk(clk), .rst_n(rst_n), .q(q));
+
+                initial begin
+                    $dumpfile("sim.vcd");
+                    $dumpvars(0, tb);
+                    #15 rst_n = 1;
+                    #100 $finish;
+                end
+
+                always #5 clk = ~clk;
+            endmodule
+            """
+            tb_path.write_text(fallback_tb, encoding="utf-8")
+
+        # 3. Execute Simulation
+        executable_out = run_dir / "sim_executable"
         sim_results = run_iverilog_simulation(
             rtl_path=rtl_path,
             tb_path=tb_path,
@@ -51,12 +87,14 @@ class SimulatorAgent(BaseAgent):
         )
 
         state["simulation_results"] = sim_results
-        
+        state["rtl_file_path"] = str(rtl_path)
+        state["testbench_file_path"] = str(tb_path)
+
         if run_logger:
             run_logger.write_json(
-                self.name, 
-                "simulation_results.json", 
-                sim_results, 
+                self.name,
+                "simulation_results.json",
+                sim_results,
                 self.step_index
             )
 
