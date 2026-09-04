@@ -1,4 +1,4 @@
-"""Complete LangGraph State Machine Workflow Orchestration."""
+"""Complete Linear LangGraph State Machine Workflow Orchestration for All Agents."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def run_node(agent_instance):
 def create_verification_workflow():
     workflow = StateGraph(dict)
 
-    # Instantiate Agents
+    # Instantiate All Agents
     rtl_analyzer = RTLAnalyzerAgent()
     planner = VerificationPlannerAgent()
     test_gen = TestGeneratorAgent()
@@ -39,7 +39,7 @@ def create_verification_workflow():
     formal = FormalAgent()
     judge = VerificationJudgeAgent()
 
-    # Add Nodes
+    # Add All Nodes to Graph
     workflow.add_node("rtl_analyzer", run_node(rtl_analyzer))
     workflow.add_node("verification_planner", run_node(planner))
     workflow.add_node("test_generator", run_node(test_gen))
@@ -52,28 +52,14 @@ def create_verification_workflow():
     workflow.add_node("formal_agent", run_node(formal))
     workflow.add_node("verification_judge", run_node(judge))
 
-    # Define Execution Pipeline Edges
+    # Define Guaranteed Linear Execution Flow
     workflow.set_entry_point("rtl_analyzer")
     workflow.add_edge("rtl_analyzer", "verification_planner")
     workflow.add_edge("verification_planner", "test_generator")
     workflow.add_edge("test_generator", "testbench_generator")
     workflow.add_edge("testbench_generator", "simulator_agent")
-
-    # Conditional routing after simulation
-    def check_simulation(state):
-        sim = state.get("simulation_results", {})
-        return "pass" if sim.get("passed", False) else "fail"
-
-    workflow.add_conditional_edges(
-        "simulator_agent",
-        check_simulation,
-        {
-            "pass": "coverage_agent",
-            "fail": "failure_analyzer"
-        }
-    )
-
-    workflow.add_edge("failure_analyzer", "verification_judge")
+    workflow.add_edge("simulator_agent", "failure_analyzer")
+    workflow.add_edge("failure_analyzer", "coverage_agent")
     workflow.add_edge("coverage_agent", "red_team_agent")
     workflow.add_edge("red_team_agent", "mutation_agent")
     workflow.add_edge("mutation_agent", "formal_agent")
@@ -84,10 +70,7 @@ def create_verification_workflow():
 
 
 def run_workflow(*args, **kwargs) -> dict:
-    """
-    Flexible workflow entrypoint supporting both dictionary state 
-    or keyword arguments passed from main_app.py.
-    """
+    """Execute the full agentic verification workflow."""
     if args and isinstance(args[0], dict):
         state = args[0]
     else:
