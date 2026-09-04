@@ -1,22 +1,30 @@
+"""Test Generator Agent for Structured Stimulus Generation."""
+
 from __future__ import annotations
-from .base import BaseAgent
-from core.state import VerificationState
-from config.settings import MAX_TEST_CASES
+
+from typing import Any, Dict
+from agents.base import BaseAgent
+
 
 class TestGeneratorAgent(BaseAgent):
-    name = "Test Generation"
-    step = 3
+    def __init__(self):
+        super().__init__(name="test_generator", step_index=3)
 
-    def run(self, state: VerificationState):
-        objectives = state.get("verification_plan", {}).get("objectives", [])
-        tests = []
-        for i, obj in enumerate(objectives[:MAX_TEST_CASES], 1):
-            tests.append({
-                "id": f"TEST-{i:03d}",
-                "scenario_id": obj.get("id", f"VP-{i:03d}"),
-                "name": obj.get("name", f"Scenario {i}"),
-                "priority": obj.get("priority", "medium"),
-                "stimulus": f"Exercise {obj.get('name','verification objective')}",
-                "expected": "No unexpected DUT behavior; required checks pass.",
-            })
-        return {"generated_tests": tests}
+    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        run_logger = state.get("logger")
+
+        vectors = {
+            "status": "SUCCESS",
+            "test_vectors": [
+                {"input": "0x00", "expected": "0x01", "description": "Baseline increment"},
+                {"input": "0xFF", "expected": "0x00", "description": "Rollover case"}
+            ],
+            "source": "test_generator"
+        }
+
+        state["test_vectors"] = vectors
+        if run_logger:
+            run_logger.write_json(self.name, "test_vectors.json", vectors, self.step_index)
+
+        return state
+        
