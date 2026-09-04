@@ -434,11 +434,11 @@ if current_state:
     p2_state = current_state.get("phase_2_state", current_state)
 
     # ------------------------------------------------------------------------
-    # TAB 1: Phase 1 — Original RTL & Spec Execution
+    # TAB 1: Phase 1 — Original Baseline Execution
     # ------------------------------------------------------------------------
     with tab_phase1:
         st.subheader("Phase 1: Original Baseline Execution")
-        st.markdown("Ran all agents against the initial user-provided RTL and functional specification to establish baseline logs and failure points.")
+        st.markdown("Runs all agents against the initial user-provided RTL and functional specification to establish baseline logs and failure points.")
         
         c1, c2, c3 = st.columns(3)
         c1.metric("Phase 1 Verdict", str(p1_state.get("final_verdict") or p1_state.get("verification_judge", {}).get("verdict", "PENDING")))
@@ -459,7 +459,7 @@ if current_state:
     # ------------------------------------------------------------------------
     with tab_phase2:
         st.subheader("Phase 2: Refinement & Rerun")
-        st.markdown("Parsed logs, triggered the RTL Repair / Enhancement Agent to patch timing or reset edge mismatches, and re-ran all agents on the enhanced RTL.")
+        st.markdown("Parses logs, triggers the RTL Repair / Enhancement Agent to patch timing or reset edge mismatches, and re-runs all agents on the enhanced RTL.")
 
         d1, d2, d3 = st.columns(3)
         d2_judge = p2_state.get("verification_judge", {})
