@@ -424,7 +424,6 @@ if current_state:
 
     st.header("4️⃣ Verification Studio & Comparative Analysis")
 
-    # Three explicit tabs matching the requested architecture
     tab_phase1, tab_phase2, tab_phase3 = st.tabs([
         "Phase 1: Original Baseline Execution",
         "Phase 2: Refinement & Rerun",
@@ -466,7 +465,15 @@ if current_state:
             data = p1_state.get(key)
             with st.expander(f"Sub-Stage: {title}", expanded=False):
                 if data:
-                    st.json(safe_json(data))
+                    if key in ["generated_testbench", "testbench"] and isinstance(data, str):
+                        st.code(data, language="verilog")
+                    elif key in ["generated_tests", "tests"] and isinstance(data, list):
+                        for item in data:
+                            st.json(safe_json(item))
+                    elif isinstance(data, (str, int, float, bool)):
+                        st.write(data)
+                    else:
+                        st.json(safe_json(data))
                 else:
                     st.info(f"No evidence recorded for {title} in Phase 1.")
 
@@ -492,7 +499,15 @@ if current_state:
             data = p2_state.get(key)
             with st.expander(f"Sub-Stage (Re-run): {title}", expanded=False):
                 if data:
-                    st.json(safe_json(data))
+                    if key in ["generated_testbench", "testbench"] and isinstance(data, str):
+                        st.code(data, language="verilog")
+                    elif key in ["generated_tests", "tests"] and isinstance(data, list):
+                        for item in data:
+                            st.json(safe_json(item))
+                    elif isinstance(data, (str, int, float, bool)):
+                        st.write(data)
+                    else:
+                        st.json(safe_json(data))
                 else:
                     st.info(f"No evidence recorded for {title} in Phase 2.")
 
