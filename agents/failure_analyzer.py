@@ -1,23 +1,29 @@
+"""Failure Analyzer Agent for Diagnosing Compilation or Simulation Bugs."""
+
 from __future__ import annotations
-from .base import BaseAgent
-from core.state import VerificationState
+
+from typing import Any, Dict
+from agents.base import BaseAgent
+
 
 class FailureAnalyzerAgent(BaseAgent):
-    name = "Failure Analysis"
-    step = 6
+    def __init__(self):
+        super().__init__(name="failure_analyzer", step_index=6)
 
-    def run(self, state: VerificationState):
-        compile_output = state.get("compile_output", "")
-        simulation_output = state.get("simulation_output", "")
-        if not state.get("compile_passed", False):
-            failure_type = "COMPILATION_ERROR"
-        elif not state.get("simulation_passed", False):
-            failure_type = "SIMULATION_ERROR"
-        else:
-            failure_type = "NONE"
-        return {"failure_analysis": {
-            "failure_type": failure_type,
-            "root_cause": (compile_output or simulation_output)[-3000:],
-            "evidence": [compile_output[-1000:], simulation_output[-1000:]],
-            "recommended_action": "REGENERATE_TESTS" if failure_type != "NONE" else "CONTINUE",
-        }}
+    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        run_logger = state.get("logger")
+        sim_results = state.get("simulation_results", {})
+
+        analysis = {
+            "status": "SUCCESS" if sim_results.get("passed") else "FAIL_DIAGNOSED",
+            "failures": [] if sim_results.get("passed") else [sim_results.get("error", "Simulation mismatch")],
+            "root_causes": [],
+            "recommendations": ["Check signal binding and clock edge triggers."],
+            "source": "failure_analyzer"
+        }
+
+        state["failure_analysis"] = analysis
+        if run_logger:
+            run_logger.write_json(self.name, "failure_analysis.json", analysis, self.step_index)
+
+        return state
