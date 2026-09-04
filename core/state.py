@@ -372,7 +372,6 @@ def create_initial_state(
     Every expected key exists from the beginning. This prevents downstream
     agents and the Streamlit UI from encountering missing keys.
     """
-    # Guarantee a valid run directory on disk
     if not run_dir:
         default_run_dir = Path("runtime/runs/default_run")
         default_run_dir.mkdir(parents=True, exist_ok=True)
@@ -499,7 +498,6 @@ def ensure_state_defaults(
             elif isinstance(default_value, str):
                 normalized[key] = ""
 
-    # Ensure run_dir is valid and exists on disk
     if not normalized.get("run_dir"):
         default_run_dir = Path("runtime/runs/default_run")
         default_run_dir.mkdir(parents=True, exist_ok=True)
