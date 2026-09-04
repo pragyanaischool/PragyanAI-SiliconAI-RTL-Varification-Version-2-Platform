@@ -1,4 +1,4 @@
-"""Complete Linear LangGraph Workflow Orchestration for All 12 Agents."""
+"""Complete Linear LangGraph Workflow Orchestration for All 12 Verification Agents."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def create_verification_workflow():
     workflow.add_node("formal_agent", run_node(formal))
     workflow.add_node("verification_judge", run_node(judge))
 
-    # 3. Define Guaranteed Linear Execution Flow
+    # 3. Define Guaranteed Linear Execution Flow (Zero Skipped Nodes)
     workflow.set_entry_point("rtl_analyzer")
     workflow.add_edge("rtl_analyzer", "verification_planner")
     workflow.add_edge("verification_planner", "test_generator")
@@ -76,7 +76,10 @@ def create_verification_workflow():
 
 
 def run_workflow(*args, **kwargs) -> dict:
-    """Execute the full agentic verification workflow."""
+    """
+    Execute the full agentic verification workflow.
+    Supports both dictionary state invocation and keyword argument unpacking.
+    """
     if args and isinstance(args[0], dict):
         state = args[0]
     else:
