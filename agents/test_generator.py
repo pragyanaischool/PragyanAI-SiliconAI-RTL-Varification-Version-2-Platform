@@ -1,4 +1,4 @@
-"""Test Vector Generator Agent with multi-key UI aliasing."""
+"""Test Generator Agent with guaranteed state population."""
 
 from __future__ import annotations
 
@@ -19,10 +19,11 @@ class TestGeneratorAgent(BaseAgent):
                 {"input": "4'b0000", "expected": "4'b0001", "description": "Reset state increment"},
                 {"input": "4'b1111", "expected": "4'b0000", "description": "Overflow rollover test"}
             ],
+            "tests_generated": 2,
             "source": "test_generator_agent"
         }
 
-        # Set multi-key aliases for maximum UI compatibility
+        # Multiple state key aliases for UI compatibility
         state["test_vectors"] = vectors
         state["generated_tests"] = vectors
         state["tests"] = vectors
