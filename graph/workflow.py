@@ -81,3 +81,12 @@ def create_verification_workflow():
     workflow.add_edge("verification_judge", END)
 
     return workflow.compile()
+
+
+def run_workflow(state: dict) -> dict:
+    """Compile and execute the verification state graph workflow."""
+    compiled_app = create_verification_workflow()
+    return compiled_app.invoke(state)
+
+
+__all__ = ["create_verification_workflow", "run_workflow"]
