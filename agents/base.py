@@ -4,224 +4,195 @@ PragyanAI SiliconAI
 
 Base class for all verification agents.
 
-Every agent automatically records:
+Every agent receives the SAME ActivityLogger from LangGraph state.
 
-- start
-- completion
-- failure
-- duration
-- iteration
-- metadata
-- exception traceback
+Agents should NOT instantiate ActivityLogger themselves.
 """
 
 from __future__ import annotations
 
 import time
+import traceback
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Dict, Optional
 
-from observability.activity_logger import (
-    ActivityLogger,
-)
+from core.state import VerificationState
+from observability.activity_logger import ActivityLogger
 
 
 class BaseAgent(ABC):
     """
-    Common base class for all verification agents.
+    Base class for all PragyanAI SiliconAI verification agents.
+
+    Responsibilities
+    ----------------
+
+    - Agent lifecycle logging
+    - Duration measurement
+    - Error handling
+    - State updates
+    - Artifact directory creation
+    - Iteration-aware logging
     """
 
-    name = "base_agent"
+    name: str = "BaseAgent"
+
+    step_name: str = "verification"
 
     def __init__(
         self,
-        logger: ActivityLogger | None = None,
+        name: Optional[str] = None,
     ) -> None:
 
-        self.logger = logger
+        if name:
+            self.name = name
 
-    # ------------------------------------------------------------------
-    # Agent implementation
-    # ------------------------------------------------------------------
+    # ========================================================================
+    # Logger
+    # ========================================================================
 
-    @abstractmethod
-    def run(
+    def get_logger(
         self,
-        state: dict[str, Any],
-    ) -> dict[str, Any]:
+        state: VerificationState,
+    ) -> Optional[ActivityLogger]:
         """
-        Implement agent-specific behavior here.
-        """
-        raise NotImplementedError
-
-    # ------------------------------------------------------------------
-    # Metadata
-    # ------------------------------------------------------------------
-
-    def input_metadata(
-        self,
-        state: dict[str, Any],
-    ) -> dict[str, Any]:
-        """
-        Return lightweight input metadata.
-
-        Do not log huge RTL contents here.
-        Actual artifacts are stored separately.
+        Get the shared run-level ActivityLogger.
         """
 
-        rtl = state.get(
-            "rtl_code",
-            state.get(
-                "current_rtl",
-                "",
-            ),
+        logger = state.get(
+            "logger"
         )
 
-        specification = state.get(
-            "specification",
-            "",
-        )
-
-        tests = state.get(
-            "generated_tests",
-            [],
-        )
-
-        return {
-            "rtl_chars": (
-                len(rtl)
-                if isinstance(rtl, str)
-                else 0
-            ),
-            "specification_chars": (
-                len(specification)
-                if isinstance(
-                    specification,
-                    str,
-                )
-                else 0
-            ),
-            "test_count": (
-                len(tests)
-                if isinstance(
-                    tests,
-                    list,
-                )
-                else 0
-            ),
-            "iteration": state.get(
-                "iteration",
-                0,
-            ),
-        }
-
-    def output_metadata(
-        self,
-        result: dict[str, Any],
-    ) -> dict[str, Any]:
-        """
-        Return lightweight output metadata.
-        """
-
-        metadata: dict[str, Any] = {}
-
-        for key in (
-            "status",
-            "simulation_passed",
-            "compile_passed",
-            "coverage_percent",
-            "mutation_score",
-            "verification_score",
-            "final_verdict",
-            "verdict",
+        if isinstance(
+            logger,
+            ActivityLogger,
         ):
-            if key in result:
-                value = result[key]
+            return logger
 
-                if isinstance(
-                    value,
-                    (str, int, float, bool),
-                ):
-                    metadata[key] = value
-
-        return metadata
-
-    # ------------------------------------------------------------------
-    # Execution wrapper
-    # ------------------------------------------------------------------
-
-    def execute(
-        self,
-        state: dict[str, Any],
-    ) -> dict[str, Any]:
-        """
-        Execute the agent with complete lifecycle logging.
-        """
-
-        started_at = time.perf_counter()
-
-        iteration = int(
-            state.get(
-                "iteration",
-                0,
-            )
-            or 0
+        verification_run = state.get(
+            "verification_run"
         )
 
-        agent_name = self.name
+        if verification_run is not None:
 
-        if self.logger:
-            self.logger.started(
-                agent=agent_name,
-                iteration=iteration,
-                metadata=self.input_metadata(
-                    state
-                ),
+            run_logger = getattr(
+                verification_run,
+                "logger",
+                None,
             )
 
-        # Keep current agent visible in state.
-        state["current_agent"] = agent_name
-        state["current_step"] = agent_name
-        state["agent_status"] = "RUNNING"
+            if isinstance(
+                run_logger,
+                ActivityLogger,
+            ):
+                return run_logger
+
+        return None
+
+    # ========================================================================
+    # Main invocation
+    # ========================================================================
+
+    def __call__(
+        self,
+        state: VerificationState,
+    ) -> VerificationState:
+        """
+        Execute one agent with automatic lifecycle logging.
+        """
+
+        start_time = time.perf_counter()
+
+        logger = self.get_logger(
+            state
+        )
+
+        iteration = state.get(
+            "iteration",
+            0,
+        )
+
+        state["current_agent"] = self.name
+
+        state["current_step"] = self.step_name
+
+        state["agent_status"] = "running"
+
+        # --------------------------------------------------------------------
+        # Agent start
+        # --------------------------------------------------------------------
+
+        if logger:
+
+            logger.started(
+                self.name,
+                iteration=iteration,
+                metadata={
+                    "step": self.step_name,
+                    "state_keys": sorted(
+                        state.keys()
+                    ),
+                },
+            )
 
         try:
+
+            # ---------------------------------------------------------------
+            # Agent implementation
+            # ---------------------------------------------------------------
 
             result = self.run(
                 state
             )
 
+            # ---------------------------------------------------------------
+            # Support agents that return None.
+            # ---------------------------------------------------------------
+
             if result is None:
                 result = state
+
+            # ---------------------------------------------------------------
+            # Ensure result is a mutable state dictionary.
+            # ---------------------------------------------------------------
 
             if not isinstance(
                 result,
                 dict,
             ):
                 raise TypeError(
-                    f"{agent_name}.run() must return "
-                    f"a dictionary, got "
-                    f"{type(result).__name__}"
+                    f"{self.name}.run() must return a state dict, "
+                    f"got {type(result).__name__}"
                 )
 
-            # Merge the returned state.
-            state.update(result)
+            state = result
 
-            state["current_agent"] = agent_name
-            state["current_step"] = agent_name
-            state["agent_status"] = "COMPLETED"
+            state["current_agent"] = self.name
+
+            state["current_step"] = self.step_name
+
+            state["agent_status"] = "completed"
 
             duration = (
                 time.perf_counter()
-                - started_at
+                - start_time
             )
 
-            if self.logger:
-                self.logger.completed(
-                    agent=agent_name,
-                    duration_seconds=duration,
+            # ---------------------------------------------------------------
+            # Completion logging
+            # ---------------------------------------------------------------
+
+            if logger:
+
+                logger.completed(
+                    self.name,
                     iteration=iteration,
+                    duration_seconds=round(
+                        duration,
+                        6,
+                    ),
                     metadata=self.output_metadata(
-                        result
+                        state
                     ),
                 )
 
@@ -231,37 +202,351 @@ class BaseAgent(ABC):
 
             duration = (
                 time.perf_counter()
-                - started_at
+                - start_time
             )
 
-            state["current_agent"] = agent_name
-            state["current_step"] = agent_name
-            state["agent_status"] = "FAILED"
+            state["agent_status"] = "failed"
 
-            errors = state.setdefault(
-                "errors",
-                [],
-            )
-
-            if isinstance(
-                errors,
-                list,
-            ):
-                errors.append(
-                    {
-                        "agent": agent_name,
-                        "error": str(exc),
-                    }
+            errors = list(
+                state.get(
+                    "errors",
+                    [],
                 )
+            )
 
-            if self.logger:
-                self.logger.failed(
-                    agent=agent_name,
-                    duration_seconds=duration,
-                    error=self.logger.exception_text(
-                        exc
-                    ),
+            errors.append(
+                f"{self.name}: {exc}"
+            )
+
+            state["errors"] = errors
+
+            # ---------------------------------------------------------------
+            # Detailed exception logging
+            # ---------------------------------------------------------------
+
+            if logger:
+
+                logger.failed(
+                    self.name,
+                    exc,
                     iteration=iteration,
+                    duration_seconds=round(
+                        duration,
+                        6,
+                    ),
+                    metadata={
+                        "step": self.step_name,
+                        "traceback": "".join(
+                            traceback.format_exception(
+                                type(exc),
+                                exc,
+                                exc.__traceback__,
+                            )
+                        ),
+                    },
                 )
 
+            # Re-raise so LangGraph / workflow can decide how to handle it.
             raise
+
+    # ========================================================================
+    # Agent implementation
+    # ========================================================================
+
+    @abstractmethod
+    def run(
+        self,
+        state: VerificationState,
+    ) -> VerificationState:
+        """
+        Implement the actual agent logic here.
+        """
+
+        raise NotImplementedError
+
+    # ========================================================================
+    # Metadata
+    # ========================================================================
+
+    def input_metadata(
+        self,
+        state: VerificationState,
+    ) -> Dict[str, Any]:
+        """
+        Metadata describing agent inputs.
+
+        Override when an agent needs additional information.
+        """
+
+        return {
+            "project_name": state.get(
+                "project_name"
+            ),
+            "iteration": state.get(
+                "iteration",
+                0,
+            ),
+        }
+
+    def output_metadata(
+        self,
+        state: VerificationState,
+    ) -> Dict[str, Any]:
+        """
+        Metadata describing agent outputs.
+
+        Avoid logging enormous source-code fields here.
+        """
+
+        return {
+            "current_step": state.get(
+                "current_step"
+            ),
+            "agent_status": state.get(
+                "agent_status"
+            ),
+            "errors": len(
+                state.get(
+                    "errors",
+                    [],
+                )
+            ),
+            "warnings": len(
+                state.get(
+                    "warnings",
+                    [],
+                )
+            ),
+        }
+
+    # ========================================================================
+    # Agent artifact helpers
+    # ========================================================================
+
+    def artifact_directory(
+        self,
+        state: VerificationState,
+    ):
+        """
+        Return the artifact directory for this agent.
+
+        The directory sequence is created by the shared logger.
+        """
+
+        logger = self.get_logger(
+            state
+        )
+
+        if logger is None:
+            return None
+
+        return logger.agent_dir(
+            self.name
+        )
+
+    def write_artifact(
+        self,
+        state: VerificationState,
+        relative_path: str,
+        content: Any,
+        *,
+        artifact_type: str = "text",
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Write an artifact using the shared run logger.
+
+        `relative_path` is interpreted relative to the run directory.
+        """
+
+        logger = self.get_logger(
+            state
+        )
+
+        if logger is None:
+            return None
+
+        return logger.write_text(
+            relative_path,
+            content,
+            artifact_type=artifact_type,
+            agent=self.name,
+            description=description,
+            metadata=metadata,
+        )
+
+    def write_json_artifact(
+        self,
+        state: VerificationState,
+        relative_path: str,
+        payload: Any,
+        *,
+        artifact_type: str = "json",
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Write a JSON artifact using the shared logger.
+        """
+
+        logger = self.get_logger(
+            state
+        )
+
+        if logger is None:
+            return None
+
+        return logger.write_json(
+            relative_path,
+            payload,
+            artifact_type=artifact_type,
+            agent=self.name,
+            description=description,
+            metadata=metadata,
+        )
+
+    def write_code_artifact(
+        self,
+        state: VerificationState,
+        relative_path: str,
+        code: str,
+        *,
+        language: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Write a source-code artifact.
+        """
+
+        logger = self.get_logger(
+            state
+        )
+
+        if logger is None:
+            return None
+
+        return logger.write_code(
+            relative_path,
+            code,
+            language=language,
+            agent=self.name,
+            description=description,
+            metadata=metadata,
+        )
+
+    # ========================================================================
+    # Logging helpers
+    # ========================================================================
+
+    def info(
+        self,
+        state: VerificationState,
+        message: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Write an informational event.
+        """
+
+        logger = self.get_logger(
+            state
+        )
+
+        if logger:
+
+            logger.info(
+                message,
+                agent=self.name,
+                iteration=state.get(
+                    "iteration",
+                    0,
+                ),
+                metadata=metadata,
+            )
+
+    def warning(
+        self,
+        state: VerificationState,
+        message: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Write a warning event.
+        """
+
+        logger = self.get_logger(
+            state
+        )
+
+        if logger:
+
+            logger.warning(
+                message,
+                agent=self.name,
+                iteration=state.get(
+                    "iteration",
+                    0,
+                ),
+                metadata=metadata,
+            )
+
+    def error(
+        self,
+        state: VerificationState,
+        message: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Write an error event.
+        """
+
+        logger = self.get_logger(
+            state
+        )
+
+        if logger:
+
+            logger.error(
+                message,
+                agent=self.name,
+                iteration=state.get(
+                    "iteration",
+                    0,
+                ),
+                metadata=metadata,
+            )
+
+    def event(
+        self,
+        state: VerificationState,
+        event_type: str,
+        message: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Write a custom agent event.
+        """
+
+        logger = self.get_logger(
+            state
+        )
+
+        if logger:
+
+            logger.agent_event(
+                self.name,
+                event_type,
+                message,
+                iteration=state.get(
+                    "iteration",
+                    0,
+                ),
+                metadata=metadata,
+            )
+
+
+__all__ = [
+    "BaseAgent",
+]
