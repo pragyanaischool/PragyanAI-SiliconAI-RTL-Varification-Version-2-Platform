@@ -1,1 +1,12 @@
 iverilog
+verilator
+yosys
+boolector
+z3
+gtkwave
+git
+make
+gcc
+g++
+yosys
+z3
