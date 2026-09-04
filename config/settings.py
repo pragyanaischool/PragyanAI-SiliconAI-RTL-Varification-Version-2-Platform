@@ -2,129 +2,84 @@
 PragyanAI SiliconAI
 ===================
 
-Central configuration for the Agentic RTL / Verilog Verification
-Platform.
+Central configuration for the Agentic RTL / Verilog Verification Platform.
 
-This file is intentionally self-contained so that all agents,
-LangGraph workflow nodes, EDA runners, observability components,
-and Streamlit UI use the same configuration source.
+This file intentionally contains compatibility aliases because different
+agents may use slightly different configuration names.
 
-Environment variables
----------------------
-Values can be overridden through environment variables or a .env file.
+No SymbiYosys dependency is required.
 
-Example:
-
-    GROQ_API_KEY=your_key
-    GROQ_MODEL=openai/gpt-oss-120b
-    DEMO_MODE=false
-
-No SymbiYosys dependency is required by this configuration.
+Formal verification is optional and defaults to disabled.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
+from typing import Any, Dict
 
 
 # ============================================================================
-# Project Paths
+# Environment helpers
 # ============================================================================
 
-# config/settings.py
-CONFIG_DIR = Path(__file__).resolve().parent
-
-# Project root:
-# <project>/
-#     config/
-#         settings.py
-PROJECT_ROOT = CONFIG_DIR.parent
-
-
-# ============================================================================
-# Helper Functions
-# ============================================================================
-
-
-def _env(
-    name: str,
-    default: str,
-) -> str:
-    """
-    Read a string environment variable.
-
-    Empty values are treated as the supplied default.
-    """
+def _env(name: str, default: Any = None) -> Any:
     value = os.getenv(name)
 
-    if value is None or not value.strip():
+    if value is None:
         return default
 
-    return value.strip()
+    value = value.strip()
 
-
-def _env_int(
-    name: str,
-    default: int,
-) -> int:
-    """
-    Read an integer environment variable safely.
-    """
-    value = os.getenv(name)
-
-    if value is None or not value.strip():
+    if value == "":
         return default
 
+    return value
+
+
+def _env_int(name: str, default: int) -> int:
     try:
-        return int(value)
-
-    except ValueError:
+        return int(_env(name, default))
+    except (TypeError, ValueError):
         return default
 
 
-def _env_float(
-    name: str,
-    default: float,
-) -> float:
-    """
-    Read a floating-point environment variable safely.
-    """
-    value = os.getenv(name)
-
-    if value is None or not value.strip():
-        return default
-
+def _env_float(name: str, default: float) -> float:
     try:
-        return float(value)
-
-    except ValueError:
+        return float(_env(name, default))
+    except (TypeError, ValueError):
         return default
 
 
-def _env_bool(
-    name: str,
-    default: bool,
-) -> bool:
-    """
-    Read a boolean environment variable safely.
-    """
-    value = os.getenv(name)
+def _env_bool(name: str, default: bool) -> bool:
+    value = str(_env(name, default)).strip().lower()
 
-    if value is None or not value.strip():
-        return default
-
-    return value.strip().lower() in {
+    if value in {
         "1",
         "true",
         "yes",
         "y",
         "on",
-    }
+        "enabled",
+    }:
+        return True
+
+    if value in {
+        "0",
+        "false",
+        "no",
+        "n",
+        "off",
+        "disabled",
+    }:
+        return False
+
+    return default
 
 
 # ============================================================================
-# Application Identity
+# Application
 # ============================================================================
 
 APP_NAME = _env(
@@ -134,7 +89,7 @@ APP_NAME = _env(
 
 APP_VERSION = _env(
     "APP_VERSION",
-    "2.0.0",
+    "1.0.0",
 )
 
 APP_DESCRIPTION = _env(
@@ -144,7 +99,7 @@ APP_DESCRIPTION = _env(
 
 
 # ============================================================================
-# LLM / Groq Configuration
+# LLM / Groq
 # ============================================================================
 
 GROQ_API_KEY = _env(
@@ -154,44 +109,42 @@ GROQ_API_KEY = _env(
 
 GROQ_MODEL = _env(
     "GROQ_MODEL",
-    "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile",
 )
 
 LLM_TEMPERATURE = _env_float(
     "LLM_TEMPERATURE",
-    0.1,
+    0.2,
 )
 
 LLM_MAX_TOKENS = _env_int(
     "LLM_MAX_TOKENS",
-    1800,
+    4096,
 )
-
-# Backward-compatible aliases that older agents may use.
 
 PLANNER_MAX_TOKENS = _env_int(
     "PLANNER_MAX_TOKENS",
-    LLM_MAX_TOKENS,
+    3000,
 )
 
 TEST_GENERATOR_MAX_TOKENS = _env_int(
     "TEST_GENERATOR_MAX_TOKENS",
-    LLM_MAX_TOKENS,
+    4000,
 )
 
 TESTBENCH_GENERATOR_MAX_TOKENS = _env_int(
     "TESTBENCH_GENERATOR_MAX_TOKENS",
-    LLM_MAX_TOKENS,
+    5000,
 )
 
 REPAIR_MAX_TOKENS = _env_int(
     "REPAIR_MAX_TOKENS",
-    LLM_MAX_TOKENS,
+    5000,
 )
 
 
 # ============================================================================
-# Demo / Offline Mode
+# Demo / execution mode
 # ============================================================================
 
 DEMO_MODE = _env_bool(
@@ -201,140 +154,87 @@ DEMO_MODE = _env_bool(
 
 
 # ============================================================================
-# RTL / Specification Limits
+# Input limits
 # ============================================================================
 
 MAX_RTL_CHARS = _env_int(
     "MAX_RTL_CHARS",
-    50000,
+    100_000,
 )
 
 MAX_RTL_CHARS_FOR_LLM = _env_int(
     "MAX_RTL_CHARS_FOR_LLM",
-    30000,
+    30_000,
 )
 
 MAX_SPEC_CHARS = _env_int(
     "MAX_SPEC_CHARS",
-    30000,
+    30_000,
 )
 
 MAX_TESTBENCH_CHARS = _env_int(
     "MAX_TESTBENCH_CHARS",
-    50000,
+    100_000,
 )
 
 
 # ============================================================================
-# Test Generation Limits
+# Test generation limits
 # ============================================================================
 
 MAX_TEST_SCENARIOS = _env_int(
     "MAX_TEST_SCENARIOS",
-    20,
+    25,
 )
 
 MAX_TEST_CASES = _env_int(
     "MAX_TEST_CASES",
-    30,
+    100,
 )
 
 MAX_TESTBENCH_LINES = _env_int(
     "MAX_TESTBENCH_LINES",
-    1200,
+    1000,
 )
 
-# Compatibility aliases.
-#
-# Different generations of the project used different names.
-# Keeping these aliases prevents import failures when older agents
-# are still present in the repository.
-
-MAX_TESTS = MAX_TEST_CASES
-
-MAX_GENERATED_TESTS = MAX_TEST_CASES
-
-MAX_SCENARIOS = MAX_TEST_SCENARIOS
-
-
-# ============================================================================
-# Verification Targets
-# ============================================================================
-
-COVERAGE_TARGET = _env_int(
-    "COVERAGE_TARGET",
-    95,
+MAX_TESTS = _env_int(
+    "MAX_TESTS",
+    100,
 )
 
-MUTATION_TARGET = _env_int(
-    "MUTATION_TARGET",
-    90,
+MAX_GENERATED_TESTS = _env_int(
+    "MAX_GENERATED_TESTS",
+    100,
 )
 
-VERIFICATION_SCORE_TARGET = _env_int(
-    "VERIFICATION_SCORE_TARGET",
-    90,
+MAX_SCENARIOS = _env_int(
+    "MAX_SCENARIOS",
+    25,
 )
 
 
 # ============================================================================
-# Iteration / Agentic Loop Configuration
+# Simulation
 # ============================================================================
 
-DEFAULT_MAX_ITERATIONS = _env_int(
-    "DEFAULT_MAX_ITERATIONS",
-    3,
+CLOCK_PERIOD_NS = _env_float(
+    "CLOCK_PERIOD_NS",
+    10.0,
 )
 
-MAX_ITERATIONS = _env_int(
-    "MAX_ITERATIONS",
-    10,
+TEST_TIMEOUT_NS = _env_int(
+    "TEST_TIMEOUT_NS",
+    1000,
 )
 
-
-# ============================================================================
-# Feature Flags
-# ============================================================================
-
-# Mutation testing is enabled from the UI by default according to this
-# setting. It can be overridden through environment variables.
-
-DEFAULT_RUN_MUTATION = _env_bool(
-    "DEFAULT_RUN_MUTATION",
-    False,
+RESET_CYCLES = _env_int(
+    "RESET_CYCLES",
+    2,
 )
 
-# Formal verification is intentionally disabled by default.
-#
-# The project does NOT require SymbiYosys.
-#
-# If a formal backend is later integrated, the feature can be enabled
-# without changing the rest of the configuration architecture.
-
-DEFAULT_RUN_FORMAL = _env_bool(
-    "DEFAULT_RUN_FORMAL",
-    False,
-)
-
-ENABLE_MUTATION = _env_bool(
-    "ENABLE_MUTATION",
-    True,
-)
-
-ENABLE_FORMAL = _env_bool(
-    "ENABLE_FORMAL",
-    False,
-)
-
-ENABLE_RED_TEAM = _env_bool(
-    "ENABLE_RED_TEAM",
-    True,
-)
-
-
-# ============================================================================
-# Simulation Configuration
-# ============================================================================
+# Compatibility aliases
+DEFAULT_CLOCK_PERIOD_NS = CLOCK_PERIOD_NS
+DEFAULT_TEST_TIMEOUT_NS = TEST_TIMEOUT_NS
 
 IVERILOG_EXECUTABLE = _env(
     "IVERILOG_EXECUTABLE",
@@ -361,34 +261,81 @@ SIMULATION_STANDARD = _env(
     "2012",
 )
 
-
-# ============================================================================
-# Testbench Defaults
-# ============================================================================
-
-CLOCK_PERIOD_NS = _env_int(
-    "CLOCK_PERIOD_NS",
-    10,
-)
-
-RESET_CYCLES = _env_int(
-    "RESET_CYCLES",
-    2,
-)
-
-TEST_TIMEOUT_NS = _env_int(
-    "TEST_TIMEOUT_NS",
-    10000,
-)
+SIM_TIMEOUT = SIMULATION_TIMEOUT_SECONDS
 
 
 # ============================================================================
-# Red-Team Configuration
+# Verification
+# ============================================================================
+
+COVERAGE_TARGET = _env_float(
+    "COVERAGE_TARGET",
+    95.0,
+)
+
+MUTATION_TARGET = _env_float(
+    "MUTATION_TARGET",
+    90.0,
+)
+
+VERIFICATION_SCORE_TARGET = _env_float(
+    "VERIFICATION_SCORE_TARGET",
+    90.0,
+)
+
+DEFAULT_MAX_ITERATIONS = _env_int(
+    "DEFAULT_MAX_ITERATIONS",
+    3,
+)
+
+MAX_ITERATIONS = _env_int(
+    "MAX_ITERATIONS",
+    DEFAULT_MAX_ITERATIONS,
+)
+
+MAX_ITERATION = _env_int(
+    "MAX_ITERATION",
+    MAX_ITERATIONS,
+)
+
+
+# ============================================================================
+# Optional verification stages
+# ============================================================================
+
+DEFAULT_RUN_MUTATION = _env_bool(
+    "DEFAULT_RUN_MUTATION",
+    True,
+)
+
+DEFAULT_RUN_FORMAL = _env_bool(
+    "DEFAULT_RUN_FORMAL",
+    False,
+)
+
+ENABLE_MUTATION = _env_bool(
+    "ENABLE_MUTATION",
+    DEFAULT_RUN_MUTATION,
+)
+
+ENABLE_FORMAL = _env_bool(
+    "ENABLE_FORMAL",
+    DEFAULT_RUN_FORMAL,
+)
+
+ENABLE_RED_TEAM = _env_bool(
+    "ENABLE_RED_TEAM",
+    True,
+)
+
+
+# ============================================================================
+# Red team
 # ============================================================================
 
 RED_TEAM_SCENARIOS = _env_int(
     "RED_TEAM_SCENARIOS",
-    8,
+    10,
 )
 
 MAX_RED_TEAM_SCENARIOS = _env_int(
@@ -398,7 +345,7 @@ MAX_RED_TEAM_SCENARIOS = _env_int(
 
 
 # ============================================================================
-# Mutation Configuration
+# Mutation
 # ============================================================================
 
 MAX_MUTATIONS = _env_int(
@@ -408,30 +355,38 @@ MAX_MUTATIONS = _env_int(
 
 
 # ============================================================================
-# Formal Configuration
+# Formal verification
 # ============================================================================
 
-# No SymbiYosys dependency is assumed.
-
-FORMAL_TIMEOUT_SECONDS = _env_int(
-    "FORMAL_TIMEOUT_SECONDS",
-    60,
-)
+# Formal backend is intentionally optional.
+#
+# Supported conceptual values:
+#
+#     none
+#     iverilog
+#     yosys
+#
+# SymbiYosys is intentionally NOT required by this project.
 
 FORMAL_BACKEND = _env(
     "FORMAL_BACKEND",
     "none",
 )
 
+FORMAL_TIMEOUT_SECONDS = _env_int(
+    "FORMAL_TIMEOUT_SECONDS",
+    30,
+)
+
 
 # ============================================================================
-# Observability / Runtime
+# Runtime directories
 # ============================================================================
 
 RUNTIME_ROOT = Path(
     _env(
         "RUNTIME_ROOT",
-        str(PROJECT_ROOT / "runtime"),
+        "runtime",
     )
 )
 
@@ -442,8 +397,6 @@ RUN_ROOT = Path(
     )
 )
 
-# Compatibility alias used by older versions of the workflow.
-
 LOG_ROOT = Path(
     _env(
         "LOG_ROOT",
@@ -453,13 +406,8 @@ LOG_ROOT = Path(
 
 
 # ============================================================================
-# Artifact Configuration
+# Logging / artifact retention
 # ============================================================================
-
-ARTIFACT_RETENTION = _env_int(
-    "ARTIFACT_RETENTION",
-    100,
-)
 
 WRITE_AGENT_LOGS = _env_bool(
     "WRITE_AGENT_LOGS",
@@ -476,32 +424,34 @@ WRITE_RUN_MANIFEST = _env_bool(
     True,
 )
 
+ARTIFACT_RETENTION = _env(
+    "ARTIFACT_RETENTION",
+    "all",
+)
+
 
 # ============================================================================
-# Streamlit Configuration
+# Streamlit
 # ============================================================================
 
 STREAMLIT_PAGE_TITLE = _env(
     "STREAMLIT_PAGE_TITLE",
-    f"{APP_NAME} | Agentic RTL Verification",
+    APP_NAME,
 )
 
 STREAMLIT_PAGE_ICON = _env(
     "STREAMLIT_PAGE_ICON",
-    "🔬",
+    "🧪",
 )
 
 
 # ============================================================================
-# Directory Helpers
+# Directory initialization
 # ============================================================================
-
 
 def ensure_directories() -> None:
     """
-    Create runtime directories required by the platform.
-
-    This function is safe to call multiple times.
+    Create required runtime directories.
     """
 
     directories = [
@@ -511,85 +461,74 @@ def ensure_directories() -> None:
     ]
 
     for directory in directories:
-        directory.mkdir(
+        Path(directory).mkdir(
             parents=True,
             exist_ok=True,
         )
 
 
-# ============================================================================
-# Tool Availability
-# ============================================================================
+# Create directories when configuration is imported.
+ensure_directories()
 
 
-def tool_available(
-    executable: str,
-) -> bool:
+# ============================================================================
+# Tool availability
+# ============================================================================
+
+def tool_available(tool_name: str) -> bool:
     """
-    Check whether an executable is available on PATH.
-
-    Example:
-
-        if tool_available("iverilog"):
-            ...
+    Return True if an executable is available on PATH.
     """
 
-    import shutil
+    if not tool_name:
+        return False
 
-    return shutil.which(executable) is not None
+    return shutil.which(
+        str(tool_name)
+    ) is not None
 
 
 def iverilog_available() -> bool:
-    """Return True when Icarus Verilog is installed."""
+    """
+    Return whether Icarus Verilog is available.
+    """
+
     return tool_available(
         IVERILOG_EXECUTABLE
     )
 
 
 def vvp_available() -> bool:
-    """Return True when VVP is installed."""
+    """
+    Return whether VVP is available.
+    """
+
     return tool_available(
         VVP_EXECUTABLE
     )
 
 
 # ============================================================================
-# Configuration Validation
+# Validation
 # ============================================================================
-
 
 def validate_settings() -> list[str]:
     """
-    Validate configuration values.
+    Validate configuration.
 
-    Returns
-    -------
-    list[str]
-        Human-readable configuration problems.
-
-    An empty list means the configuration is valid.
+    Returns a list of human-readable errors.
     """
 
     errors: list[str] = []
 
-    if not APP_NAME:
-        errors.append(
-            "APP_NAME cannot be empty."
-        )
-
-    if LLM_TEMPERATURE < 0:
-        errors.append(
-            "LLM_TEMPERATURE cannot be negative."
-        )
-
-    if LLM_MAX_TOKENS <= 0:
-        errors.append(
-            "LLM_MAX_TOKENS must be greater than zero."
-        )
-
     if MAX_RTL_CHARS <= 0:
         errors.append(
             "MAX_RTL_CHARS must be greater than zero."
+        )
+
+    if MAX_SPEC_CHARS <= 0:
+        errors.append(
+            "MAX_SPEC_CHARS must be greater than zero."
         )
 
     if MAX_TEST_SCENARIOS <= 0:
@@ -597,38 +536,24 @@ def validate_settings() -> list[str]:
             "MAX_TEST_SCENARIOS must be greater than zero."
         )
 
-    if MAX_TEST_CASES <= 0:
-        errors.append(
-            "MAX_TEST_CASES must be greater than zero."
-        )
-
     if MAX_TESTBENCH_LINES <= 0:
         errors.append(
             "MAX_TESTBENCH_LINES must be greater than zero."
         )
 
-    if COVERAGE_TARGET < 0 or COVERAGE_TARGET > 100:
+    if MAX_ITERATIONS <= 0:
         errors.append(
-            "COVERAGE_TARGET must be between 0 and 100."
+            "MAX_ITERATIONS must be greater than zero."
         )
 
-    if MUTATION_TARGET < 0 or MUTATION_TARGET > 100:
+    if CLOCK_PERIOD_NS <= 0:
         errors.append(
-            "MUTATION_TARGET must be between 0 and 100."
+            "CLOCK_PERIOD_NS must be greater than zero."
         )
 
-    if (
-        VERIFICATION_SCORE_TARGET < 0
-        or VERIFICATION_SCORE_TARGET > 100
-    ):
+    if TEST_TIMEOUT_NS <= 0:
         errors.append(
-            "VERIFICATION_SCORE_TARGET must be "
-            "between 0 and 100."
-        )
-
-    if DEFAULT_MAX_ITERATIONS <= 0:
-        errors.append(
-            "DEFAULT_MAX_ITERATIONS must be greater than zero."
+            "TEST_TIMEOUT_NS must be greater than zero."
         )
 
     if SIMULATION_TIMEOUT_SECONDS <= 0:
@@ -636,113 +561,128 @@ def validate_settings() -> list[str]:
             "SIMULATION_TIMEOUT_SECONDS must be greater than zero."
         )
 
-    if COMPILE_TIMEOUT_SECONDS <= 0:
+    if not RUN_ROOT:
         errors.append(
-            "COMPILE_TIMEOUT_SECONDS must be greater than zero."
+            "RUN_ROOT is not configured."
+        )
+
+    if FORMAL_BACKEND.lower() not in {
+        "none",
+        "iverilog",
+        "yosys",
+    }:
+        errors.append(
+            "FORMAL_BACKEND must be one of: none, iverilog, yosys."
         )
 
     return errors
 
 
-# ============================================================================
-# Configuration Summary
-# ============================================================================
+SETTINGS_ERRORS = validate_settings()
 
 
-def get_settings_summary() -> dict[str, object]:
+# ============================================================================
+# Settings summary
+# ============================================================================
+
+def get_settings_summary() -> Dict[str, Any]:
     """
     Return a safe configuration summary.
 
-    Secrets such as GROQ_API_KEY are deliberately excluded.
+    Secrets such as GROQ_API_KEY are never returned.
     """
 
     return {
         "app_name": APP_NAME,
         "app_version": APP_VERSION,
-        "demo_mode": DEMO_MODE,
         "groq_model": GROQ_MODEL,
-        "llm_temperature": LLM_TEMPERATURE,
-        "llm_max_tokens": LLM_MAX_TOKENS,
-        "max_rtl_chars": MAX_RTL_CHARS,
-        "max_test_scenarios": MAX_TEST_SCENARIOS,
-        "max_test_cases": MAX_TEST_CASES,
-        "max_testbench_lines": MAX_TESTBENCH_LINES,
+        "groq_configured": bool(
+            GROQ_API_KEY
+        ),
+        "demo_mode": DEMO_MODE,
+        "iverilog_available": iverilog_available(),
+        "vvp_available": vvp_available(),
+        "clock_period_ns": CLOCK_PERIOD_NS,
+        "test_timeout_ns": TEST_TIMEOUT_NS,
         "coverage_target": COVERAGE_TARGET,
         "mutation_target": MUTATION_TARGET,
-        "verification_score_target": (
-            VERIFICATION_SCORE_TARGET
-        ),
-        "default_max_iterations": (
-            DEFAULT_MAX_ITERATIONS
-        ),
-        "default_run_mutation": (
-            DEFAULT_RUN_MUTATION
-        ),
-        "default_run_formal": (
-            DEFAULT_RUN_FORMAL
-        ),
-        "enable_mutation": ENABLE_MUTATION,
-        "enable_formal": ENABLE_FORMAL,
+        "verification_score_target": VERIFICATION_SCORE_TARGET,
+        "max_iterations": MAX_ITERATIONS,
+        "run_mutation": DEFAULT_RUN_MUTATION,
+        "run_formal": DEFAULT_RUN_FORMAL,
         "enable_red_team": ENABLE_RED_TEAM,
-        "iverilog_executable": (
-            IVERILOG_EXECUTABLE
-        ),
-        "vvp_executable": VVP_EXECUTABLE,
-        "iverilog_available": (
-            iverilog_available()
-        ),
-        "vvp_available": vvp_available(),
-        "simulation_timeout_seconds": (
-            SIMULATION_TIMEOUT_SECONDS
-        ),
+        "formal_backend": FORMAL_BACKEND,
         "runtime_root": str(RUNTIME_ROOT),
         "run_root": str(RUN_ROOT),
         "log_root": str(LOG_ROOT),
     }
 
 
-# ============================================================================
-# Backward Compatibility
-# ============================================================================
-
-# Some earlier project versions used these names.
-
-APP_TITLE = APP_NAME
-
-MODEL_NAME = GROQ_MODEL
-
-TEMPERATURE = LLM_TEMPERATURE
-
-MAX_TOKENS = LLM_MAX_TOKENS
-
-MAX_ITERATION = DEFAULT_MAX_ITERATIONS
-
-SIM_TIMEOUT = SIMULATION_TIMEOUT_SECONDS
-
-
-# ============================================================================
-# Initialization
-# ============================================================================
-
-# Create runtime directories when the module is imported.
-#
-# This is intentionally lightweight and safe for Streamlit Cloud.
-
-ensure_directories()
-
-
-# ============================================================================
-# Optional startup validation
-# ============================================================================
-
-SETTINGS_ERRORS = validate_settings()
-
-if SETTINGS_ERRORS:
-    # Do not raise an exception here.
-    #
-    # Raising during import would make the Streamlit application fail
-    # before it can display a useful error message.
-    #
-    # Agents / application code may inspect SETTINGS_ERRORS when needed.
-    pass
+__all__ = [
+    "APP_NAME",
+    "APP_VERSION",
+    "APP_DESCRIPTION",
+    "GROQ_API_KEY",
+    "GROQ_MODEL",
+    "LLM_TEMPERATURE",
+    "LLM_MAX_TOKENS",
+    "PLANNER_MAX_TOKENS",
+    "TEST_GENERATOR_MAX_TOKENS",
+    "TESTBENCH_GENERATOR_MAX_TOKENS",
+    "REPAIR_MAX_TOKENS",
+    "DEMO_MODE",
+    "MAX_RTL_CHARS",
+    "MAX_RTL_CHARS_FOR_LLM",
+    "MAX_SPEC_CHARS",
+    "MAX_TESTBENCH_CHARS",
+    "MAX_TEST_SCENARIOS",
+    "MAX_TEST_CASES",
+    "MAX_TESTBENCH_LINES",
+    "MAX_TESTS",
+    "MAX_GENERATED_TESTS",
+    "MAX_SCENARIOS",
+    "CLOCK_PERIOD_NS",
+    "TEST_TIMEOUT_NS",
+    "RESET_CYCLES",
+    "DEFAULT_CLOCK_PERIOD_NS",
+    "DEFAULT_TEST_TIMEOUT_NS",
+    "IVERILOG_EXECUTABLE",
+    "VVP_EXECUTABLE",
+    "SIMULATION_TIMEOUT_SECONDS",
+    "COMPILE_TIMEOUT_SECONDS",
+    "SIMULATION_STANDARD",
+    "SIM_TIMEOUT",
+    "COVERAGE_TARGET",
+    "MUTATION_TARGET",
+    "VERIFICATION_SCORE_TARGET",
+    "DEFAULT_MAX_ITERATIONS",
+    "MAX_ITERATIONS",
+    "MAX_ITERATION",
+    "DEFAULT_RUN_MUTATION",
+    "DEFAULT_RUN_FORMAL",
+    "ENABLE_MUTATION",
+    "ENABLE_FORMAL",
+    "ENABLE_RED_TEAM",
+    "RED_TEAM_SCENARIOS",
+    "MAX_RED_TEAM_SCENARIOS",
+    "MAX_MUTATIONS",
+    "FORMAL_BACKEND",
+    "FORMAL_TIMEOUT_SECONDS",
+    "RUNTIME_ROOT",
+    "RUN_ROOT",
+    "LOG_ROOT",
+    "WRITE_AGENT_LOGS",
+    "WRITE_WORKFLOW_LOG",
+    "WRITE_RUN_MANIFEST",
+    "ARTIFACT_RETENTION",
+    "STREAMLIT_PAGE_TITLE",
+    "STREAMLIT_PAGE_ICON",
+    "ensure_directories",
+    "tool_available",
+    "iverilog_available",
+    "vvp_available",
+    "validate_settings",
+    "get_settings_summary",
+    "SETTINGS_ERRORS",
+]
 
