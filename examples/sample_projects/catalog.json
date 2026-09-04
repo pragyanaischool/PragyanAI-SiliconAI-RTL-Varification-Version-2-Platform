@@ -1,0 +1,23 @@
+[
+  {
+    "id": "counter_4bit",
+    "spec": "examples/sample_projects/counter_4bit/spec.md",
+    "rtl": "examples/sample_projects/counter_4bit/rtl.v",
+    "testbench": "examples/sample_projects/counter_4bit/testbench.v",
+    "vectors": "examples/sample_projects/counter_4bit/test_vectors.json"
+  },
+  {
+    "id": "alu_8bit",
+    "spec": "examples/sample_projects/alu_8bit/spec.md",
+    "rtl": "examples/sample_projects/alu_8bit/rtl.v",
+    "testbench": "examples/sample_projects/alu_8bit/testbench.v",
+    "vectors": "examples/sample_projects/alu_8bit/test_vectors.json"
+  },
+  {
+    "id": "fifo_8x16",
+    "spec": "examples/sample_projects/fifo_8x16/spec.md",
+    "rtl": "examples/sample_projects/fifo_8x16/rtl.v",
+    "testbench": "examples/sample_projects/fifo_8x16/testbench.v",
+    "vectors": "examples/sample_projects/fifo_8x16/test_vectors.json"
+  }
+]

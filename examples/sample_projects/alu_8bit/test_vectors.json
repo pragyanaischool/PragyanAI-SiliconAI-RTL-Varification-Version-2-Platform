@@ -1,0 +1,27 @@
+[
+  {
+    "name": "add",
+    "stimulus": "a=0x05,b=0x03,op=000",
+    "expected": "y=0x08,zero=0"
+  },
+  {
+    "name": "subtract",
+    "stimulus": "a=0x05,b=0x03,op=001",
+    "expected": "y=0x02,zero=0"
+  },
+  {
+    "name": "and_zero",
+    "stimulus": "a=0xF0,b=0x0F,op=010",
+    "expected": "y=0x00,zero=1"
+  },
+  {
+    "name": "xor",
+    "stimulus": "a=0xAA,b=0xFF,op=100",
+    "expected": "y=0x55,zero=0"
+  },
+  {
+    "name": "invalid_op",
+    "stimulus": "op=111",
+    "expected": "y=0x00,zero=1"
+  }
+]

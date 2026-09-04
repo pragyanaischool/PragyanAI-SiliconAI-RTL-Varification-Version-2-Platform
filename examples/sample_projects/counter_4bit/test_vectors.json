@@ -1,0 +1,22 @@
+[
+  {
+    "name": "reset",
+    "stimulus": "reset=1 for one rising edge",
+    "expected": "count=0"
+  },
+  {
+    "name": "increment",
+    "stimulus": "reset=0 for one rising edge",
+    "expected": "count increments by 1"
+  },
+  {
+    "name": "rollover",
+    "stimulus": "count=15, reset=0",
+    "expected": "count=0"
+  },
+  {
+    "name": "mid_run_reset",
+    "stimulus": "reset=1 while count is non-zero",
+    "expected": "count=0"
+  }
+]

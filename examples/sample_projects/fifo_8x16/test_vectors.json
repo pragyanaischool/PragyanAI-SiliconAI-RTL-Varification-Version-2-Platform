@@ -1,0 +1,22 @@
+[
+  {
+    "name": "reset",
+    "stimulus": "reset=1",
+    "expected": "empty=1, full=0, count=0"
+  },
+  {
+    "name": "write_read_order",
+    "stimulus": "write 0x11 then 0x22, read twice",
+    "expected": "0x11 then 0x22"
+  },
+  {
+    "name": "full",
+    "stimulus": "16 valid writes",
+    "expected": "full=1,count=16"
+  },
+  {
+    "name": "overflow_protection",
+    "stimulus": "write while full",
+    "expected": "count remains 16"
+  }
+]
