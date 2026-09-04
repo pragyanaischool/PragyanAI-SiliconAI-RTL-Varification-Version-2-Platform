@@ -15,13 +15,14 @@ Supported operations
     invoke_text()
     invoke_json()
     invoke_json_strict()
+    call_llm()
     check_llm_available()
 
 Design principles
 -----------------
 
 * Groq model is centrally configured.
-* Streamlit Secrets are supported through config.settings.
+* Streamlit Secrets are supported through config.settings and st.secrets.
 * Environment variables are supported.
 * LLM failures are captured instead of crashing the entire workflow.
 * JSON responses are normalized.
@@ -48,7 +49,7 @@ from config.settings import (
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_MODEL = "openai/gpt-oss-120b"
+DEFAULT_MODEL = "llama-3.3-70b-versatile"
 
 
 # ---------------------------------------------------------------------------
@@ -66,21 +67,21 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration & Secrets Resolution
 # ---------------------------------------------------------------------------
 
 def _streamlit_secret(
     name: str,
 ) -> str:
     """
-    Read a Streamlit secret without making Streamlit mandatory.
+    Read a Streamlit secret safely without making Streamlit mandatory.
     """
-
     try:
         import streamlit as st
 
         if (
             hasattr(st, "secrets")
+            and st.secrets
             and name in st.secrets
         ):
             value = st.secrets[name]
@@ -99,12 +100,10 @@ def get_api_key() -> str:
     Resolve Groq API key.
 
     Priority:
-
-        environment
-        Streamlit secret
-        settings.py
+        1. Environment variables
+        2. Streamlit secrets (`st.secrets`)
+        3. settings.py fallback
     """
-
     value = os.getenv(
         "GROQ_API_KEY",
         "",
@@ -127,16 +126,14 @@ def get_api_key() -> str:
 
 def get_model_name() -> str:
     """
-    Resolve Groq model.
+    Resolve Groq model name.
 
     Priority:
-
-        environment
-        Streamlit secret
-        settings.py
-        default
+        1. Environment variables
+        2. Streamlit secrets (`st.secrets`)
+        3. settings.py fallback
+        4. Default model
     """
-
     value = os.getenv(
         "GROQ_MODEL",
         "",
@@ -176,10 +173,7 @@ def get_llm(
 
     Raises a RuntimeError when LangChain-Groq is unavailable or the
     API key is missing.
-
-    The caller can then choose a deterministic fallback.
     """
-
     if not LANGCHAIN_GROQ_AVAILABLE:
         raise RuntimeError(
             "langchain-groq is not installed. "
@@ -190,7 +184,7 @@ def get_llm(
 
     if not api_key:
         raise RuntimeError(
-            "GROQ_API_KEY is not configured."
+            "GROQ_API_KEY is not configured in environment variables or Streamlit secrets."
         )
 
     selected_model = (
@@ -232,7 +226,6 @@ def _response_to_text(
     """
     Convert a LangChain response into plain text.
     """
-
     if response is None:
         return ""
 
@@ -304,18 +297,7 @@ def _strip_code_fences(
 ) -> str:
     """
     Remove markdown code fences.
-
-    Handles:
-
-        ```json
-        {...}
-        ```
-
-        ```
-        {...}
-        ```
     """
-
     value = str(
         text or ""
     ).strip()
@@ -343,17 +325,7 @@ def _extract_json_object(
 ) -> str:
     """
     Extract the first balanced JSON object.
-
-    This handles responses such as:
-
-        Here is the result:
-
-        {
-            "status": "PASS"
-        }
-
     """
-
     value = _strip_code_fences(
         text
     )
@@ -412,6 +384,22 @@ def _extract_json_object(
 
 
 # ---------------------------------------------------------------------------
+# Simple prompt invocation helper (`call_llm`)
+# ---------------------------------------------------------------------------
+
+def call_llm(prompt: str) -> str:
+    """
+    Simple wrapper to invoke the LLM with a single prompt string
+    and return the text response.
+    """
+    return invoke_text(
+        system_prompt="You are an expert Silicon RTL Verification assistant.",
+        user_prompt=prompt,
+        fallback="Unable to generate response at this time.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Text invocation
 # ---------------------------------------------------------------------------
 
@@ -426,14 +414,7 @@ def invoke_text(
 ) -> str:
     """
     Invoke the LLM and return text.
-
-    On failure, returns fallback rather than terminating the verification
-    workflow.
-
-    This behavior is intentional because deterministic verification stages
-    should continue whenever possible.
     """
-
     system_text = str(
         system_prompt or ""
     ).strip()
@@ -497,12 +478,7 @@ def invoke_json(
 ) -> dict[str, Any]:
     """
     Invoke the LLM and parse a JSON object.
-
-    Invalid JSON never becomes an empty successful result.
-
-    Instead, fallback is returned and an internal metadata marker is added.
     """
-
     fallback_value: dict[str, Any] = dict(
         fallback or {}
     )
@@ -558,14 +534,8 @@ def invoke_json_strict(
     model: str | None = None,
 ) -> dict[str, Any]:
     """
-    Strict JSON invocation.
-
-    Unlike invoke_json(), this raises when the LLM cannot return valid JSON.
-
-    Use this only where the calling agent explicitly wants to handle
-    the error.
+    Strict JSON invocation. Raises when valid JSON cannot be parsed.
     """
-
     if not get_api_key():
         raise RuntimeError(
             "GROQ_API_KEY is not configured."
@@ -641,12 +611,7 @@ def invoke_json_strict(
 def check_llm_available() -> dict[str, Any]:
     """
     Perform a lightweight LLM availability check.
-
-    This does not execute a verification task.
-
-    Returns a structured diagnostic object.
     """
-
     model = get_model_name()
     api_key = get_api_key()
 
@@ -724,10 +689,7 @@ def check_llm_available() -> dict[str, Any]:
 def llm_config_summary() -> dict[str, Any]:
     """
     Return safe LLM configuration information.
-
-    API key is intentionally never returned.
     """
-
     return {
         "model": get_model_name(),
         "api_key_configured": bool(
@@ -751,18 +713,14 @@ def llm_config_summary() -> dict[str, Any]:
 
 __all__ = [
     "DEFAULT_MODEL",
-
     "LANGCHAIN_GROQ_AVAILABLE",
-
     "get_api_key",
     "get_model_name",
     "get_llm",
-
     "invoke_text",
     "invoke_json",
     "invoke_json_strict",
-
+    "call_llm",
     "check_llm_available",
     "llm_config_summary",
 ]
-
