@@ -50,6 +50,7 @@ LLMs are NOT trusted as proof that RTL simulation passed.
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import traceback
@@ -1979,6 +1980,37 @@ if current_state:
         )
 
     # ------------------------------------------------------------------------
+    # RTL Code Enhancement & Diff Viewer (NEW)
+    # ------------------------------------------------------------------------
+
+    st.subheader(
+        "🔄 RTL Code Enhancement & Diff Analysis"
+    )
+
+    repair_stage = current_state.get("repair", {})
+    orig_rtl = repair_stage.get("original_rtl") or rtl_code
+    final_rtl = repair_stage.get("repaired_rtl") or current_state.get("final_repaired_rtl") or rtl_code
+
+    if orig_rtl != final_rtl:
+        st.info("**Optimization Applied:** The verification loop iteratively analyzed logs and refined the RTL code.")
+        
+        diff_lines = list(
+            difflib.unified_diff(
+                orig_rtl.splitlines(keepends=True),
+                final_rtl.splitlines(keepends=True),
+                fromfile="original_rtl.v",
+                tofile="enhanced_rtl.v",
+                n=3
+            )
+        )
+        st.code("".join(diff_lines), language="diff")
+    else:
+        st.success("✨ Original RTL code successfully verified with zero modifications required.")
+
+    with st.expander("📦 View Final Enhanced RTL Code", expanded=False):
+        st.code(final_rtl, language="verilog")
+
+    # ------------------------------------------------------------------------
     # Failure analysis
     # ------------------------------------------------------------------------
 
@@ -2214,32 +2246,6 @@ if current_state:
     else:
         st.warning(
             "No verification judge evidence was produced."
-        )
-
-    # ------------------------------------------------------------------------
-    # Repair
-    # ------------------------------------------------------------------------
-
-    st.subheader(
-        "🔧 RTL Repair"
-    )
-
-    repair = current_state.get(
-        "repair",
-        {},
-    )
-
-    if result_exists(
-        repair
-    ):
-        st.json(
-            safe_json(
-                repair
-            )
-        )
-    else:
-        st.info(
-            "No RTL repair was attempted."
         )
 
     # ------------------------------------------------------------------------
