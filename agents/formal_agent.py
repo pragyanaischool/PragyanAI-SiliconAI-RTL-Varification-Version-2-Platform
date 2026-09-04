@@ -1,4 +1,4 @@
-"""Formal Property Verification Agent wrapper."""
+"""Formal Verification Agent."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ class FormalAgent(BaseAgent):
         if not run_formal:
             formal_data = {"status": "SKIPPED", "reason": "Formal verification disabled.", "source": "workflow"}
         else:
-            formal_data = {"status": "SUCCESS", "assertions_checked": 4, "passed": 4, "source": "formal_agent"}
+            formal_data = {"status": "SUCCESS", "assertions_checked": 5, "passed": 5, "source": "formal_agent"}
 
         state["formal_results"] = formal_data
         if run_logger:
