@@ -255,7 +255,7 @@ def safe_json_value(
 
 
 class ActivityLogger:
-    def __init__(self, run_dir: str | Path, run_id: str):
+    def __init__(self, run_dir: str | Path, run_id: str, metadata: dict[str, Any] | None = None):
         self.run_dir = Path(run_dir)
         self.run_id = run_id
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -339,9 +339,15 @@ class ActivityLogger:
             step,
         )
 
-    def started(self, agent: str, step: int, iteration: int):
+    def started(self, agent: str, step: int, iteration: int, metadata: dict[str, Any] | None = None):
         return self.log_activity(
-            agent, "EXECUTION_STARTED", "STARTED", f"{agent} started", step, iteration
+            agent,
+            "EXECUTION_STARTED",
+            "STARTED",
+            f"{agent} started",
+            step=step,
+            iteration=iteration,
+            metadata=metadata,
         )
 
     def completed(
@@ -357,10 +363,10 @@ class ActivityLogger:
             "EXECUTION_COMPLETED",
             "SUCCESS",
             f"{agent} completed",
-            step,
-            iteration,
-            duration_ms,
-            metadata,
+            step=step,
+            iteration=iteration,
+            duration_ms=duration_ms,
+            metadata=metadata,
         )
 
     def failed(self, agent: str, step: int, iteration: int, error: Exception):
@@ -369,10 +375,43 @@ class ActivityLogger:
             "EXECUTION_FAILED",
             "ERROR",
             str(error),
-            step,
-            iteration,
+            step=step,
+            iteration=iteration,
             metadata={"exception": type(error).__name__},
         )
+
+    def run_started(self, metadata: dict[str, Any] | None = None):
+        return self.log_activity(
+            "run_manager",
+            "RUN_STARTED",
+            "STARTED",
+            f"Run {self.run_id} started",
+            metadata=metadata,
+        )
+
+    def run_completed(self, verdict: str | None = None, metadata: dict[str, Any] | None = None):
+        return self.log_activity(
+            "run_manager",
+            "RUN_COMPLETED",
+            "SUCCESS",
+            f"Run {self.run_id} completed with verdict {verdict}",
+            metadata={"verdict": verdict, **(metadata or {})},
+        )
+
+    def run_failed(self, error: Any, metadata: dict[str, Any] | None = None):
+        return self.log_activity(
+            "run_manager",
+            "RUN_FAILED",
+            "ERROR",
+            f"Run {self.run_id} failed: {error}",
+            metadata=metadata,
+        )
+
+    def close(self):
+        """Clean up logger handlers if needed."""
+        for h in list(self.logger.handlers):
+            h.close()
+            self.logger.removeHandler(h)
 
     def manifest(self, data: dict[str, Any]):
         path = self.run_dir / "run_manifest.json"
